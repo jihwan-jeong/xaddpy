@@ -195,7 +195,7 @@ class XADD:
         else:
             return self.convert_func_to_xadd(term)
 
-    def build_initial_xadd(self, xadd_as_list, to_canonical=False):
+    def build_initial_xadd(self, xadd_as_list, to_canonical=True):
         """
         Given decisions and leaf values, recursively build initial XADD and return the id of the root node.
         :param xadd_as_list:        (list)
@@ -388,8 +388,7 @@ class XADD:
             if len(non_assigned_vars) > 0:
                 return None
 
-            for sub_out, sub_in in cont_assign.items():
-                dec_expr = dec_expr.xreplace({sub_out: sympy.S(sub_in)})
+            dec_expr = dec_expr.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in cont_assign.items()})
             assert isinstance(dec_expr, boolalg.BooleanAtom) or isinstance(dec_expr, bool)
             return bool(dec_expr)
         else:
@@ -422,8 +421,7 @@ class XADD:
         # Now at a terminal node; evaluate the expression
         t: XADDTNode = cast(XADDTNode, node)
         expr = t.expr
-        for sub_out, sub_in in cont_assign.items():
-            expr = expr.xreplace({sub_out: sympy.S(sub_in)})
+        expr = expr.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in cont_assign.items()})
         
         # Not all required variables were assigned
         if len(expr.free_symbols) > 0:
@@ -773,10 +771,9 @@ class XADD:
         if node._is_leaf:
             node: XADDTNode = cast(XADDTNode, node)
             expr = node.expr
-            for sub_out, sub_in in subst_dict.items():
-                # expr = expr.subs(sub_out, sub_in)
-                expr = expr.xreplace({sub_out: sympy.S(sub_in)})
-            expr = sympy.expand(expr)
+            if len(expr.free_symbols.intersection(set(subst_dict.keys()))) > 0:
+                expr = expr.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in subst_dict.items()})
+                expr = sympy.expand(expr)
             annotation = node._annotation
             return self.get_leaf_node(expr, annotation)
 
@@ -807,12 +804,12 @@ class XADD:
                 dec, is_reversed = self.get_dec_expr_index(sub_in, create=True)
         else:
             lhs = dec_expr.lhs
-            for sub_out, sub_in in subst_dict.items():
-                # Check if the expression holds in equality and the true branch is NaN
-                # Assuming canonical expression.. rhs is always 0. Hence, lhs == 0 iff dec_expr == S.true.
-                # In this case, set dec_expr = False, so that false branch can be chosen instead.
-                # lhs = lhs.subs(sub_out, sub_in)
-                lhs = lhs.xreplace({sub_out: sympy.S(sub_in)})
+            if len(lhs.free_symbols.intersection(set(subst_dict.keys()))) > 0:
+                lhs = lhs.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in subst_dict.items()})
+                    # Check if the expression holds in equality and the true branch is NaN
+                    # Assuming canonical expression.. rhs is always 0. Hence, lhs == 0 iff dec_expr == S.true.
+                    # In this case, set dec_expr = False, so that false branch can be chosen instead.
+                    # lhs = lhs.subs(sub_out, sub_in)
 
             if lhs == 0 and high == self.NAN:
                 dec_expr = S.false
@@ -913,7 +910,8 @@ class XADD:
     def collect_vars(self, node_id):
         node = self.get_exist_node(node_id)
         var_set = set()
-        return node.collect_vars_(var_set)
+        node.collect_vars_(var_set)
+        return var_set
 
     def reduced_arg_min_or_max(self, node_id, var):
         arg_id = self.get_arg(node_id)
@@ -1602,7 +1600,7 @@ class XADD:
                 f.write(str(node))
         node.turn_on_print_node_info()
 
-    def import_xadd(self, fname=None, xadd_str=None, locals=None):
+    def import_xadd(self, fname=None, xadd_str=None, locals=None, to_canonical=True):
         """
         Import the XADD node defined in the input file or in a string.
         """
@@ -1617,7 +1615,7 @@ class XADD:
             xadd_as_list = [sympy.sympify(xadd_str.strip('( [] )'), locals=locals)]
         else:
             xadd_as_list = parse_xadd_grammar(xadd_str, ns=locals if locals is not None else {})[1][0]
-        xadd = self.build_initial_xadd(xadd_as_list)
+        xadd = self.build_initial_xadd(xadd_as_list, to_canonical=to_canonical)
         return xadd
 
     def import_lp_xadd(self, fname, model_name=None, prob_instance: dict = None):

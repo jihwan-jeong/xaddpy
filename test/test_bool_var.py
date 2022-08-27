@@ -25,15 +25,15 @@ def test_mixed_subs():
     fname = cwd / "test/ex/bool_cont_mixed.xadd"
     
     orig_dd = context.import_xadd(fname)
+    var_set = context.collect_vars(orig_dd)
     print(f"Original XADD: \n{context.get_repr(orig_dd)}")
     
     # Get the symbols
     b1, b2, b3, x, y = sp.symbols('b1 b2 b3 x y')
-    b4, b5, a, b = sp.symbols('b4 b5 a b')
 
     # Define substitutions
-    subst_bool = {b1: b4, b2: b5}
-    subst_cont = {x: a, y: b}
+    subst_bool = {b1: b2, b2: b1}
+    subst_cont = {x: y, y: x}
 
     res1 = context.substitute(orig_dd, subst_dict=subst_bool)
     res1 = context.reduce_lp(res1)
@@ -78,28 +78,26 @@ def test_reduce_lp():
     cwd = Path.cwd()
     fname = cwd / "test/ex/bool_cont_mixed.xadd"
     
-    orig_dd = context.import_xadd(fname)
-    
-    print(f"Original XADD: \n{context.get_repr(orig_dd)}")
-    
-    # Make canonical
-    can_dd = context.make_canonical(orig_dd)
+    orig_dd = context.import_xadd(fname, to_canonical=False)
+    print(f"Original XADD (not canonical form): \n{context.get_repr(orig_dd)}")
+    orig_dd = context.reduce_lp(orig_dd)
+    print(f"After calling reduce_lp: \n{context.get_repr(orig_dd)}")   
     
     # Get the symbols
     b1, b2, b3, x, y = sp.symbols('b1 b2 b3 x y')
 
-    # Substitute x = 2 * y
-    subst = {x: 2 * y}
-    subst_dd = context.substitute()
-
-def test_bvar_eval():
-    context = XADD()
-    return
+    # Substitute x = 2 * y + 5
+    subst = {x: 2 * y + 5}
+    subst_dd = context.substitute(orig_dd, subst)
+    print(f"Substitute `x = 2 * y + 5`\nResult (before reduce_lp): \n{context.get_repr(subst_dd)}")
+    res = context.reduce_lp(subst_dd)
+    print(f"\nAfter reduce_lp: \n{context.get_repr(res)}")
 
 
 if __name__ == "__main__":
     # test_bvar_subs()
-    test_mixed_subs()
+    # test_mixed_subs()
     # test_mixed_eval()
+    test_reduce_lp()
     # test_bvar_eval()
 
