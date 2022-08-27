@@ -1,4 +1,5 @@
 import gurobipy
+import sympy as sp
 import sympy.core.relational as relational
 from gurobipy import *
 from xaddpy.utils.global_vars import REL_TYPE, REL_NEGATED
@@ -91,6 +92,14 @@ class LocalReduceLP:
         if node._is_leaf:
             return node_id
 
+        # boolean variables are independent, no redundancy or infeasibility possible
+        dec_expr = self.context._id_to_expr[node.dec]
+        if not isinstance(dec_expr, relational.Rel):
+            assert isinstance(dec_expr, sp.Symbol)
+            low = self.reduce_lp_v2(node._low, test_dec, redundancy)
+            high = self.reduce_lp_v2(node._high, test_dec, redundancy)
+            return self.context.get_internal_node(node.dec, low, high)
+        
         # Full branch implication test
         # If `node.dec` is implied by `test_dec`, then replace `node` with `node._high`
         if self.is_test_implied(test_dec, node.dec):

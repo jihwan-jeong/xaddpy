@@ -1,10 +1,11 @@
+from sympy.logic import boolalg
 import sympy
 import sympy.core.numbers as numbers
 import sympy.core.relational as relational
 from sympy import oo, S
 
 import xaddpy.utils.util
-from xaddpy.xadd.node import XADDINode, XADDTNode
+from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 from xaddpy.xadd.reduce_lp import ReduceLPContext
 import abc
 from tqdm import tqdm
@@ -13,7 +14,7 @@ from xaddpy.utils.util import compute_rref_filter_eq_constr
 from xaddpy.xadd.xadd_parse_utils import parse_xadd_grammar
 from xaddpy.utils.logger import logger
 
-from typing import Union
+from typing import Dict, Union, cast
 
 USE_APPLY_GET_INODE_CANON = False
 LARGE_INTEGER = 10000
@@ -78,7 +79,7 @@ class XADD:
 
         # temporary nodes
         self._tempINode = XADDINode(-1, -1, -1, context=self)
-        self._tempTNode = XADDTNode(sympy.S(-1), context=self)
+        self._temp_term_node = XADDTNode(sympy.S(-1), context=self)
 
         # Ensure that the 0th decision ID is invalid
         null = NullDec()
@@ -130,6 +131,9 @@ class XADD:
     def add_eliminated_var(self, var):
         self._eliminated_var.append(var)
 
+    """
+    Functionalities for EMSPO (exact MILP reduction of Smart Predict then Optimize)
+    """
     def set_problem(self, prob):
         self._problem_type = prob
 
@@ -153,6 +157,7 @@ class XADD:
     def link_json_file(self, config_json_fname):
         self._config_json_fname = config_json_fname
 
+    """Managing variables"""
     def update_bounds(self, bound_dict):
         self._var_to_bound.update(bound_dict)
 
@@ -257,7 +262,7 @@ class XADD:
         # Enforce canonicity via the 'apply trick' at this level.
         dec = n.dec
         dec_expr = self._id_to_expr[dec]
-        dec, is_reversed = self.get_dec_expr_index(dec_expr, True)
+        dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
 
         # If reversed, swap low and high branches
         if is_reversed: tmp = high; high = low; low = tmp
@@ -363,7 +368,74 @@ class XADD:
         false_half = self.apply_int(ind_false, low, 'prod')
         result = self.apply_int(true_half, false_half, 'sum')
         return result
+    
+    def evaluate_decision(
+        self,
+        dec_expr: sympy.Basic,
+        bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
+        cont_assign: Dict[sympy.Symbol, Union[int, float]], 
+    ) -> bool:  
+        if isinstance(dec_expr, boolalg.BooleanAtom):
+            return bool(dec_expr)
+        # if a decision expression is a single symbol, it should be a boolean decision
+        elif isinstance(dec_expr, sympy.Symbol):
+            return bool_assign.get(dec_expr)
+        # Inequality decision
+        elif isinstance(dec_expr, relational.Rel):
+            # if any of the variables in dec_expr is not evaluated, returns None
+            var_set = dec_expr.free_symbols
+            non_assigned_vars = var_set.difference(cont_assign.keys())
+            if len(non_assigned_vars) > 0:
+                return None
 
+            for sub_out, sub_in in cont_assign.items():
+                dec_expr = dec_expr.xreplace({sub_out: sympy.S(sub_in)})
+            assert isinstance(dec_expr, boolalg.BooleanAtom) or isinstance(dec_expr, bool)
+            return bool(dec_expr)
+        else:
+            return None
+        
+    def evaluate(
+        self, 
+        node_id: int, 
+        bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
+        cont_assign: Dict[sympy.Symbol, Union[int, float]],
+        primitive_type: bool = False,
+    ) -> Union[float, int, None]:
+        """
+        Evaluates a given node by inserting boolean and real values into variables.
+        """
+        # Get the root node
+        node: Node = self.get_exist_node(node_id)
+
+        # Traverse the decision diagram until leaf is found
+        while isinstance(node, XADDINode):
+            branch_high: bool = self.evaluate_decision(self._id_to_expr[node.dec], bool_assign, cont_assign)
+
+            # Not all required variables were assigned
+            if branch_high is None:
+                return
+            
+            # Advance down to the next node
+            node = self.get_exist_node(node._high if branch_high else node._low)
+
+        # Now at a terminal node; evaluate the expression
+        t: XADDTNode = cast(XADDTNode, node)
+        expr = t.expr
+        for sub_out, sub_in in cont_assign.items():
+            expr = expr.xreplace({sub_out: sympy.S(sub_in)})
+        
+        # Not all required variables were assigned
+        if len(expr.free_symbols) > 0:
+            return
+        
+        # Return python primitive type
+        if primitive_type:
+            return float(expr)
+        
+        # Return sympy type
+        return expr
+    
     def apply(self, id1, id2, op, annotation=None):
         """
         Recursively apply op(node1, node2). op can be min, max, sum, prod.
@@ -682,7 +754,12 @@ class XADD:
         subst_cache = {}
         return self.reduce_sub(node_id, subst_dict, subst_cache)
 
-    def reduce_sub(self, node_id, subst_dict, subst_cache):
+    def reduce_sub(        
+        self, 
+        node_id: int, 
+        subst_dict: Dict[sympy.Symbol, Union[sympy.Basic, float, int]], 
+        subst_cache: Dict[int, int],
+    ):
         """
 
         :param node_id:
@@ -690,10 +767,11 @@ class XADD:
         :param subst_cache:
         :return:
         """
-        node = self.get_exist_node(node_id)
+        node: Node = self.get_exist_node(node_id)
 
         # A terminal node should be reduced by default
         if node._is_leaf:
+            node: XADDTNode = cast(XADDTNode, node)
             expr = node.expr
             for sub_out, sub_in in subst_dict.items():
                 # expr = expr.subs(sub_out, sub_in)
@@ -708,15 +786,25 @@ class XADD:
             return ret
 
         # Handle an internal node
+        node: XADDINode = cast(XADDINode, node)
         low = self.reduce_sub(node._low, subst_dict, subst_cache)
         high = self.reduce_sub(node._high, subst_dict, subst_cache)
 
         dec = node.dec
         dec_expr = self._id_to_expr[dec]
+        # When a Boolean variable is replaced
         if isinstance(dec_expr, sympy.Symbol):
             sub_in = subst_dict.get(dec_expr, None)
+            is_reversed = False
             if sub_in is not None:
-                dec, is_reversed = self.get_dec_expr_index(sub_in, create=False)
+                # Handle tautologies
+                if sub_in == S.true:
+                    subst_cache[node_id] = high
+                    return high
+                elif sub_in == S.false:
+                    subst_cache[node_id] = low
+                    return low
+                dec, is_reversed = self.get_dec_expr_index(sub_in, create=True)
         else:
             lhs = dec_expr.lhs
             for sub_out, sub_in in subst_dict.items():
@@ -740,6 +828,7 @@ class XADD:
             elif dec_expr == S.false:
                 subst_cache[node_id] = low
                 return low
+
             dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
 
         # Swap low and high branches if reversed
@@ -747,7 +836,6 @@ class XADD:
             tmp = high; high = low; low = tmp
 
         # # Substitution could have affected variable ordering.
-        # else:
         if not self._direct_substitution:
             ret = self.get_inode_canon(dec, low, high)
             self.check_local_ordering_and_exit_on_error(ret)
@@ -765,6 +853,8 @@ class XADD:
         :param subst_dict:          (dict)
         :return:
         """
+        assert all(map(lambda x: isinstance(x, boolalg.BooleanAtom) or isinstance(x, bool), subst_dict.values())),\
+            "All values of the `subst_dict` should be boolean type"
         varSet = self.collect_vars(node_id)
         for var in subst_dict:
             if var in varSet:
@@ -784,7 +874,7 @@ class XADD:
         else:
             return ret
 
-    def reduce_op(self, node_id, dec_id, op):
+    def reduce_op(self, node_id: int, dec_id: int, op: str) -> int:
         node = self.get_exist_node(node_id)
 
         # A terminal node should be reduced (and cannot be restricted)
@@ -797,7 +887,7 @@ class XADD:
         ret = self._reduce_cache.get(temp_reduce_key, None)
         if ret is not None:
             return ret
-
+        node: XADDINode = cast(XADDINode, node)
         if (op != "restrict_high") or (dec_id != node.dec):
             low = self.reduce_op(node._low, dec_id, op)
         if (op != "restrict_low") or (dec_id != node.dec):
@@ -822,8 +912,8 @@ class XADD:
 
     def collect_vars(self, node_id):
         node = self.get_exist_node(node_id)
-        vars = set()
-        return node.collect_vars(vars)
+        var_set = set()
+        return node.collect_vars_(var_set)
 
     def reduced_arg_min_or_max(self, node_id, var):
         arg_id = self.get_arg(node_id)
@@ -856,7 +946,7 @@ class XADD:
 
             dec = node.dec
             dec_expr = self._id_to_expr[dec]
-            dec, is_reversed = self.get_dec_expr_index(dec_expr, True)
+            dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
             # Swap low and high branches if reversed
             if is_reversed:
                 tmp = high; high = low; low = tmp
@@ -1061,7 +1151,7 @@ class XADD:
     def get_repr(self, node_id):
         # For printing out the representation
         node = self._id_to_node[node_id]
-        return node
+        return repr(node)
 
     def get_leaf_node_from_node(self, node):
         """
@@ -1077,8 +1167,8 @@ class XADD:
         :param annotation:      (int) id of annotation XADD
         :return:
         """
-        self._tempTNode.set(expr, annotation)
-        node_id = self._node_to_id.get(self._tempTNode, None)
+        self._temp_term_node.set(expr, annotation)
+        node_id = self._node_to_id.get(self._temp_term_node, None)
         if node_id is None:
             # node not in cache, so create
             node_id = self._nodeCounter
@@ -1088,8 +1178,7 @@ class XADD:
             self._nodeCounter += 1
 
             # add in all new variables
-            vars_in_expr = set()
-            vars_in_expr.update(expr.free_symbols)
+            vars_in_expr = expr.free_symbols.copy()
             diff_vars = vars_in_expr.difference(self._var_set)
             for v in diff_vars:
                 # Boolean variables would have been added immediately so are already in self._bool_var_set
@@ -1283,8 +1372,10 @@ class XADD:
             #     index = len(self._expr_to_id) + LARGE_INTEGER  # Make expr_id start from 1 (0: NullDec)
             # else:
             #     index = len(self._expr_to_id)
-            poly = expr.lhs.as_poly()
-            deg = poly.total_degree()
+            deg = 1
+            if isinstance(expr, relational.Rel):
+                poly = expr.lhs.as_poly()
+                deg = poly.total_degree()
             if deg > 1:
                 index = len(self._expr_to_id) + LARGE_INTEGER ** 2  # Make expr_id start from 1 (0: NullDec)
             elif vars_in_expr.intersection(self._free_var_set):
@@ -1295,8 +1386,10 @@ class XADD:
             self._expr_to_id[expr] = index
             self._id_to_expr[index] = expr
 
+            # Boolean decision
             if isinstance(expr, sympy.Symbol):
                 self._bool_var_set.update(vars_in_expr)
+            # Relational decision
             else:
                 diff_vars = vars_in_expr.difference(self._var_set)
                 for v in diff_vars:
@@ -1313,7 +1406,7 @@ class XADD:
             print("Unexpected Missing node: " + node_id)
         return node
 
-    def get_internal_node(self, dec_id: int, low: int, high: int):
+    def get_internal_node(self, dec_id: int, low: int, high: int) -> int:
         """
 
         :param dec_id:      (int) id of decision expression
@@ -1489,15 +1582,15 @@ class XADD:
             var_arg_min_or_max = self._var_to_anno.get(var)
             self.export_xadd(var_arg_min_or_max, fname, append=True)
 
-    def export_xadd(self, node_id: int, fname: str, append=False):
+    def export_xadd(self, node_id: int, fname: str, append: bool = False):
         """
         Export the XADD node to a .xadd file.
         If append is True, then open the file in the append mode.
         """
         # Firstly, turn off printing node info
-        node = self._id_to_node.get(node_id, None)
+        node: Node = self._id_to_node.get(node_id, None)
         if node is None:
-            raise KeyError('There is no node with the node id {}'.format(node_id))
+            raise KeyError(f'There is no node with id {node_id}')
         node.turn_off_print_node_info()
 
         if append:
@@ -1507,6 +1600,7 @@ class XADD:
         else:
             with open(fname, 'w+') as f:
                 f.write(str(node))
+        node.turn_on_print_node_info()
 
     def import_xadd(self, fname=None, xadd_str=None, locals=None):
         """
@@ -1518,7 +1612,7 @@ class XADD:
         if fname is not None:
             with open(fname, 'r') as f:
                 xadd_str = f.read().replace('\n', '')
-        # When it is just a leaf expression: not supported yet..
+        # When it is just a leaf expression: not supported
         if xadd_str.rfind('(') == 0 and xadd_str.rfind('[') == 2:
             xadd_as_list = [sympy.sympify(xadd_str.strip('( [] )'), locals=locals)]
         else:
