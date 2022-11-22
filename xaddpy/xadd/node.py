@@ -8,15 +8,31 @@ class Node(metaclass=abc.ABCMeta):
     def __init__(self, context):
         self._context = context
         self._print_node_info = True
+        self._is_leaf = False
+        self._inode_to_vars = self._context._inode_to_vars
 
     def __str__(self):
         return
 
-    def collect_vars(self, var_set=None):
+    @abc.abstractmethod
+    def turn_off_print_node_info(self):
+        pass
+
+    @abc.abstractmethod
+    def turn_on_print_node_info(self):
+        pass        
+
+    def collect_vars(self) -> set:
         """
         :param var_set:        (set)
         :return:
         """
+        var_set = set()
+        self.collect_vars_(var_set)
+        return var_set
+    
+    @abc.abstractmethod
+    def collect_vars_(self, var_set):
         pass
 
     def collect_nodes(self, nodes=None):
@@ -80,15 +96,11 @@ class XADDTNode(Node):
     def _annotation(self, annotation):
         self.__annotation = annotation
 
-    def collect_vars(self, var_set=None):
+    def collect_vars_(self, var_set: set):
         """
-        Return a set containing all sympy Symbols.
+        Updates the set containing all sympy Symbols.
         """
-        if var_set is not None:
-            var_set.update(self.expr.free_symbols)
-        else:
-            var_set = self.expr.free_symbols
-        return var_set
+        var_set.update(self.expr.free_symbols)
 
     def collect_nodes(self, nodes=None):
         if nodes is not None:
@@ -111,9 +123,9 @@ class XADDTNode(Node):
 
     def __str__(self, level=0):
         # curr_node_expr = self.expr
-        str_expr = "( [{}] )".format(self.expr)
-        str_node_id = " node_id: {}".format(self._context._node_to_id.get(self))
-        str_anno = " anno: {}".format(self._annotation) if self._annotation is not None else ""
+        str_expr = f"( [{self.expr}] )"
+        str_node_id = f" node_id: {self._context._node_to_id.get(self)}"
+        str_anno = f" anno: {self._annotation}" if self._annotation is not None else ""
         if self._print_node_info:
             return str_expr + str_node_id + str_anno
         else:
@@ -132,9 +144,9 @@ class XADDTNode(Node):
 
     def __repr__(self, level=0):
         # curr_node_expr = self.expr
-        str_expr = "( [{}] )".format(self.expr)
-        str_node_id = " node_id: {}".format(self._context._node_to_id.get(self))
-        str_anno = " anno: {}".format(self._annotation) if self._annotation is not None else ""
+        str_expr = f"( [{self.expr}] )"
+        str_node_id = f" node_id: {self._context._node_to_id.get(self)}"
+        str_anno = f" anno: {self._annotation}" if self._annotation is not None else ""
         if self._print_node_info:
             return str_expr + str_node_id + str_anno
         else:
@@ -142,7 +154,7 @@ class XADDTNode(Node):
 
 
 class XADDINode(Node):
-    def __init__(self, dec, low=None, high=None, degree=2, context=None):
+    def __init__(self, dec, low=None, high=None, context=None):
         """
         Basic decision node of a tree case function.
         The value is a Sympy inequality expression, and the low and the high branches correspond to
@@ -151,27 +163,14 @@ class XADDINode(Node):
         :param dec:     (int) Decision expression in a canonical form (rhs is a number, lhs contains variables)
         :param low:     (int) False branch
         :param high:    (int) True branch
-        :param degree:  (int) Tree degree (default: 2, when linked list: 1)
         """
         # Link the node with XADD
         assert context is not None, "XADD should be passed when instantiating nodes!"
         super().__init__(context)
 
         self.dec = dec
-
-        # Flag for checking if a leaf Node
-        self._is_leaf = False
-
-        # degree == 1 is used for linked list object (only at the beginning)
-        if degree == 1:
-            self.next_node = None
-        elif degree == 2:
-            self._low = low
-            self._high = high
-        else:
-            raise ValueError("Degree > 2 is not defined")
-
-        self.degree = degree
+        self._low = low
+        self._high = high
 
     def turn_off_print_node_info(self):
         self._print_node_info = False
@@ -206,140 +205,61 @@ class XADDINode(Node):
     def dec(self, dec):
         assert isinstance(dec, int)
         self._dec = dec
-        # # ensure canonical form when setting
-        # assert isinstance(expr, sympy.Basic) or expr == oo or expr == -oo, "expr should be a Sympy object!"
-        #
-        # if isinstance(expr, relational.Rel):
-        #     # Basic canonical form of inequality from Sympy
-        #     expr = expr.canonical
-        #
-        #     # check whether the relation is 'greater than (>=)'
-        #     self._gt = True if isinstance(expr, relational.GreaterThan) else False
-        # else:
-        #     # When a terminal node: a linear expression
-        #     expr = sympy.simplify(expr)
-        # self._expr = expr
-        # self._atoms = expr.atoms()
-
-    def get_next(self):
-        """
-        Return next node of a node in a linked list. Raise error when called from a binary tree.
-        """
-        assert self.degree == 1, "Cannot call get_next method from a binary tree!"
-        if not self._is_leaf:
-            return self.next_node
-        else:
-            raise ValueError("Cannot call get_next method from a leaf node!")
-
-    def set_next(self, node):
-        """
-        Set next node of a node in a linked list.
-        :param node:        (Node)
-        """
-        self.next_node = node       # set the next node
-
-    def get_low_child(self):
-        return self._context._id_to_node[self._low]
-
-    def get_high_child(self):
-        return self._context._id_to_node[self._high]
-
-    def get_expr(self):
-        return self._context._id_to_expr[self.expr]
-
-    def get_bound(self, var):
-        """
-        Return either lower bound or upper bound of 'var' from self.expr.
-        :param var:     (sympy.Symbol) target variable
-        :return:        (sympy.Basic, bool) a sympy expression along with the boolean value indicating whether an upper
-                        or lower bound. True for upper bound, False for lower bound.
-        """
-        # note expr is in canonical form: expression (<=, >=, <, >) number; expression does not have negative sign;
-        # variables in expression are ordered.
-        comp = sympy.solve(self.expr, var)              # Solve for 'var'
-        # Check if only a number is multiplied to 'var'. In this case, the result is of form 'var <=, >= expression'
-        # plus 'var > - infty' or 'var < infty'. We do not need the finiteness condition, so remove it.
-        if isinstance(comp, sympy.And):
-            assert len(comp.args) == 2, "No more than 3 terms should be generated as a result of solve(ineq)!"
-            args1rhs = comp.args[1].canonical.rhs
-            i = 0 if (args1rhs == oo) or (args1rhs == -oo) else 1
-            comp = comp.args[i]
-        else:
-            comp = sympy.simplify(comp)
-        # otherwise, some variables are multiplied to 'var'. Need to condition on this term being either positive or
-        # negative to determine the result
-        # else:
-        #     print("Expression: {}".format(comp))
-        #     raise ValueError("This case is not expected when getting bounds!")
-            # res = 1
-            # res = [res * term for term in expr.lhs.atoms() if term != var]
-
-        # canonical form
-        comp = comp.canonical
-        # check whether upper bound or lower bound over 'var'
-        ub = isinstance(comp, relational.LessThan)        # if ub: 'var' <= upper bound
-        expr = comp.rhs
-        return expr, ub
-
-    def collect_nodes(self, nodes=None):
+    
+    def collect_nodes(self, nodes: set = None):
         if self in nodes:
             return
         nodes.add(self)
         self._context.get_exist_node(self._low).collect_nodes(nodes)
         self._context.get_exist_node(self._high).collect_nodes(nodes)
 
-    def collect_vars(self, var_set=None):
+    def collect_vars_(self, var_set: set):
         # Check cache
-        vars2 = self._context._inode_to_vars.get(self, None)
+        vars2 = self._inode_to_vars.get(self, None)
         if vars2 is not None:
             var_set.update(vars2)
-            return var_set
+            return
+
         low = self._context.get_exist_node(self._low)
         high = self._context.get_exist_node(self._high)
+        low.collect_vars_(var_set)
+        high.collect_vars_(var_set)
         expr = self._context._id_to_expr[self.dec]
         var_set.update(expr.free_symbols)
-        low.collect_vars(var_set)
-        high.collect_vars(var_set)
 
-        self._context._inode_to_vars[self] = var_set.copy()
-        return var_set
+        self._inode_to_vars[self] = var_set.copy()
+        
 
     def __hash__(self):
         """
         Note that the terminal node and internal node are used differently in comparing keys in dictionary.
         """
-        if self.degree == 2:
-            return hash((self.dec, self._low, self._high))
-        elif self.degree == 1:
-            return hash((self.dec, self.next_node))
+        return hash((self.dec, self._low, self._high))
 
     def __eq__(self, other):
         if isinstance(other, XADDINode):
-            if self.degree == 2:
-                return (self.dec == other.dec) and (self._low == other._low) and (self._high == other._high)
-            elif self.degree == 1:
-                return (self.dec, self.next_node) == (other.dec, other.next_node)
+            return (self.dec == other.dec) and (self._low == other._low) and (self._high == other._high)
         else:
             return False
 
     def __str__(self, level=0):
         ret = ""
-        ret += "( [{}]".format(self._context._id_to_expr[self.dec])
+        ret += f"( [{self._context._id_to_expr[self.dec]}]"
 
         # print node id
         if self._print_node_info:
-            ret += " (dec, id): {}, {}".format(self.dec, self._context._node_to_id.get(self))
+            ret += f" (dec, id): {self.dec}, {self._context._node_to_id.get(self)}"
 
         # Node level cache
         high = self._context._id_to_node.get(self._high, None)
         if high is not None:
-            ret += "\n" + "\t"*(level+1) + " {} ".format(high.__str__(level+1))
+            ret += "\n" + "\t"*(level+1) + f" {high.__str__(level+1)} "
         else:
             ret += "h:[None] "
 
         low = self._context._id_to_node.get(self._low, None)
         if low is not None:
-            ret += "\n" + "\t" * (level + 1) + " {} ".format(low.__str__(level + 1))
+            ret += "\n" + "\t" * (level + 1) + f" {low.__str__(level + 1)} "
         else:
             ret += "l:[None] "
         ret += ") "
@@ -347,22 +267,22 @@ class XADDINode(Node):
 
     def __repr__(self, level=0):
         ret = ""
-        ret += "( [{}]".format(self._context._id_to_expr[self.dec])
+        ret += f"( [{self._context._id_to_expr[self.dec]}]"
 
         # print node id
         if self._print_node_info:
-            ret += " (dec, id): {}, {}".format(self.dec, self._context._node_to_id.get(self))
+            ret += f" (dec, id): {self.dec}, {self._context._node_to_id.get(self)}"
 
         # Node level cache
         high = self._context._id_to_node.get(self._high, None)
         if high is not None:
-            ret += "\n" + "\t"*(level+1) + " {} ".format(high.__str__(level+1))
+            ret += "\n" + "\t"*(level+1) + f" {high.__str__(level+1)} "
         else:
             ret += "h:[None] "
 
         low = self._context._id_to_node.get(self._low, None)
         if low is not None:
-            ret += "\n" + "\t" * (level + 1) + " {} ".format(low.__str__(level + 1))
+            ret += "\n" + "\t" * (level + 1) + f" {low.__str__(level + 1)} "
         else:
             ret += "h:[None] "
         ret += ") "
