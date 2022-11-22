@@ -42,9 +42,22 @@ class Node(metaclass=abc.ABCMeta):
         """
         pass
 
+    def is_leaf(self) -> bool:
+        return self._is_leaf
+
+    @property
+    @abc.abstractmethod
+    def low(self) -> int:
+        pass
+    
+    @property
+    @abc.abstractmethod
+    def high(self) -> int:
+        pass
+
 
 class XADDTNode(Node):
-    def __init__(self, expr, annotation=None, context=None):
+    def __init__(self, expr: sympy.Basic, annotation=None, context=None):
         """
         A leaf XADD node implementation. Annotation can be tracked. Need to provide integer ids for
         leaf expression, node id, and annotation (if not None).
@@ -80,12 +93,12 @@ class XADDTNode(Node):
         self._annotation = annotation
 
     @property
-    def expr(self):
+    def expr(self) -> sympy.Basic:
         return self._expr
 
     @expr.setter
-    def expr(self, expr):
-        assert isinstance(expr, sympy.Basic) or expr == oo or expr == -oo, "expr should be a Sympy object for XADDTNode!"
+    def expr(self, expr: sympy.Basic):
+        assert isinstance(expr, sympy.Basic), "expr should be a Sympy object for XADDTNode!"
         self._expr = expr
 
     @property
@@ -152,6 +165,14 @@ class XADDTNode(Node):
         else:
             return str_expr
 
+    @property
+    def high(self) -> int:
+        raise NotImplementedError
+    
+    @property
+    def low(self) -> int:
+        raise NotImplementedError
+
 
 class XADDINode(Node):
     def __init__(self, dec, low=None, high=None, context=None):
@@ -205,7 +226,23 @@ class XADDINode(Node):
     def dec(self, dec):
         assert isinstance(dec, int)
         self._dec = dec
+
+    @property
+    def high(self) -> int:
+        return self._high
     
+    @property
+    def low(self) -> int:
+        return self._low
+    
+    @high.setter
+    def high(self, high):
+        self._high = high
+    
+    @low.setter
+    def low(self, low):
+        self._low = low
+
     def collect_nodes(self, nodes: set = None):
         if self in nodes:
             return

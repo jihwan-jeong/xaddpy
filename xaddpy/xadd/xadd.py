@@ -14,13 +14,33 @@ from xaddpy.utils.util import compute_rref_filter_eq_constr
 from xaddpy.xadd.xadd_parse_utils import parse_xadd_grammar
 from xaddpy.utils.logger import logger
 
-from typing import Dict, Union, cast
+from typing import Dict, Tuple, Union, cast, List, Optional
 
 USE_APPLY_GET_INODE_CANON = False
 LARGE_INTEGER = 10000
 
 
+def default_ordering(context, expr: sympy.Basic) -> int:
+    num_unique_expr = len(context._expr_to_id)
+
+    # Decision expression consisting of continuous variables
+    if isinstance(expr, relational.Rel):
+        poly = expr.lhs.as_poly()
+        deg = poly.total_degree()    
+        if deg > 1:
+            index = num_unique_expr + LARGE_INTEGER ** 2
+        else:
+            index = num_unique_expr + LARGE_INTEGER
+    # Boolean decisions
+    else:
+        index = num_unique_expr
+    return index
+
+
 class XADD:
+
+    _func_var_index = default_ordering
+
     def __init__(self, args: dict = {}):
         # XADD variable maintenance
         self._cvar_to_id = {}
@@ -28,13 +48,10 @@ class XADD:
         self._var_set = set()
         self._bool_var_set = set()
         self._str_var_to_var = {}
-        self._pred_coeffs = set()
-        self._pred_coeff_vec = None
 
         self._sympy_to_gurobi = {}
         self._opt_var = None
         self._opt_var_lst = None
-        self._paramSet = set()
         self._eliminated_var = []
         self._decisionVars = set()
         self._min_var_set = set()
@@ -50,9 +67,9 @@ class XADD:
         self._id_to_expr = {}
 
         # XADD node maintenance
-        self._id_to_node = {}
-        self._node_to_id = {}
-        self._var_to_anno = {}                       # annotation dictionary for argmin / argmax
+        self._id_to_node: Dict[int, Node] = {}
+        self._node_to_id: Dict[Node, int] = {}
+        self._var_to_anno: Dict[sympy.Symbol, int] = {}     # annotation dictionary for argmin / argmax
 
         # Flush
         self._special_nodes = set()
@@ -65,7 +82,7 @@ class XADD:
         self._reduce_cache = {}
         self._reduce_leafop_cache = {}
         self._reduce_canon_cache = {}
-        # self._reduce_annotate_cache = {}
+
         self._apply_cache = {}
         self._apply_caches = {}
         self._inode_to_vars = {}
@@ -73,7 +90,7 @@ class XADD:
 
         # Reduce LP
         self.RLPContext = ReduceLPContext(self, **args)
-
+        
         # Node maintenance
         self._nodeCounter = 0
 
@@ -89,28 +106,18 @@ class XADD:
         # Create standard nodes
         self.create_standard_nodes()
 
-        # Solving min or max problem
-        self._is_min = None
-
         # How to handle decisions that hold with equality
         self._prune_equality = True
 
         # Do or do not reorder XADD after substitution
         self._direct_substitution = False
 
-        # Set the problem type
-        self._problem_type = ''
-
-        # Node id corresponding to the objective function
-        self._obj = None
-        self._additive_obj = False
-
         # Other attributes
-        self._feature_dim: int = None
-        self._param_dim: int = None
-        self._param_gurobi_var = None
         self._args: dict = args
 
+    def set_variable_ordering_func(self, func):
+        XADD._func_var_index = func
+    
     def create_standard_nodes(self):
         """
         Create and store standard nodes and generate indices, which can be frequently used.
@@ -121,66 +128,15 @@ class XADD:
         self.NEG_oo = self.get_leaf_node(-oo)
         self.NAN = self.get_leaf_node(sympy.nan)
 
-        # Create the special zero node to be used to track annotations for bilinear program (ig stands for ignore)
-        zero_ig_node = XADDTNode(sympy.S(0), context=self, annotation=sympy.nan)
-        self.ZERO_ig = self._nodeCounter
-        self._id_to_node[self.ZERO_ig] = zero_ig_node
-        self._node_to_id[zero_ig_node] = self.ZERO_ig
-        self._nodeCounter += 1
-
     def add_eliminated_var(self, var):
         self._eliminated_var.append(var)
-
-    """
-    Functionalities for EMSPO (exact MILP reduction of Smart Predict then Optimize)
-    """
-    def set_problem(self, prob):
-        self._problem_type = prob
-
-    def set_feature_dim(self, dim):
-        self._feature_dim = dim
-
-    def set_param_dim(self, dim):
-        self._param_dim = dim
-
-    def create_symbolic_coeffs(self, locals, coeff_symbol='c'):
-        coeffs_lst = []
-        dim = len(self._min_var_set)
-        for i in range(dim):
-            coeff_i = sympy.symbols(f'{coeff_symbol}{i+1}')
-            self._pred_coeffs.add(coeff_i)
-            locals[str(coeff_i)] = coeff_i
-            coeffs_lst.append(coeff_i)
-        self._pred_coeff_vec = sympy.Matrix(coeffs_lst)
-        return locals
-
-    def link_json_file(self, config_json_fname):
-        self._config_json_fname = config_json_fname
 
     """Managing variables"""
     def update_bounds(self, bound_dict):
         self._var_to_bound.update(bound_dict)
 
-    def update_decision_vars(self, bvariables, cvariables0, cvariables1, min_var_set_id):
-        variables = list(bvariables) + list(cvariables0) + list(cvariables1)
-        self._decisionVars = set(variables)
-        self._numDecVar = len(self._decisionVars)
-        self._bool_var_set.update(set(bvariables))
-        self._min_var_set.update(set(cvariables0) if min_var_set_id == 0 else set(cvariables1))
-        self._free_var_set.update(set(cvariables1) if min_var_set_id == 0 else set(cvariables0))
-
     def update_name_space(self, ns):
         self._name_space = ns
-
-    def set_objective(self, obj: Union[int, dict]):
-        self._obj = obj
-        if isinstance(obj, dict):
-            self._additive_obj = True
-        else:
-            self._additive_obj = False
-
-    def get_objective(self):
-        return self._obj
 
     def convert_func_to_xadd(self, term):
         args = term.as_two_terms()
@@ -195,14 +151,14 @@ class XADD:
         else:
             return self.convert_func_to_xadd(term)
 
-    def build_initial_xadd(self, xadd_as_list, to_canonical=True):
+    def build_initial_xadd(self, xadd_as_list: List, to_canonical=True):
         """
-        Given decisions and leaf values, recursively build initial XADD and return the id of the root node.
+        Given decisions and leaf values in a list, 
+        recursively build initial XADD and return the id of the root node.
         :param xadd_as_list:        (list)
         :return:
         """
         if len(xadd_as_list) == 1:
-            # return self.convert2XADD(xadd_as_list[0])
             return self.get_leaf_node(xadd_as_list[0])
 
         dec_expr = xadd_as_list[0]
@@ -213,42 +169,24 @@ class XADD:
 
         # swap low and high branches if reversed
         if is_reversed:
-            tmp = high; high = low; low = tmp
+            low, high = high, low
         if to_canonical:
             return self.get_inode_canon(dec, low, high)
         else:
             return self.get_internal_node(dec, low, high)
 
-    def build_initial_xadd_lp(self, lp_formulation, is_min=True):
-        """
-        Given LP constraints, recursively build initial XADD and return the id of the root node.
-        :param lp_formulation:
-        :return:
-        """
-        if len(lp_formulation) == 1:
-            # return self.convert2XADD(lp_formulation[0])
-            return self.get_leaf_node(lp_formulation[0])
-
-        dec_expr = lp_formulation[0]
-        dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
-        low = self.oo if is_min else self.NEG_oo
-        high = self.build_initial_xadd_lp(lp_formulation[1:])
-
-        # swap low and high branches if reversed
-        if is_reversed:
-            tmp = high; high = low; low = tmp
-        return self.get_inode_canon(dec, low, high)
-
-    def make_canonical(self, node_id):
+    def make_canonical(self, node_id: int) -> int:
         self._reduce_canon_cache.clear()
         return self.make_canonical_int(node_id)
 
-    def make_canonical_int(self, node_id):
+    def make_canonical_int(self, node_id: int) -> int:
         n = self.get_exist_node(node_id)
 
         # A terminal node should be reduced by default
-        if n._is_leaf:
+        if n.is_leaf():
             return self.get_leaf_node_from_node(node=n)
+
+        n = cast(XADDINode, n)
 
         # Check to see if this node has already been made canonical
         ret = self._reduce_canon_cache.get(node_id, None)
@@ -256,8 +194,8 @@ class XADD:
             return ret
 
         # Recursively ensure canonicity for subdiagrams
-        low = self.make_canonical_int(n._low)
-        high = self.make_canonical_int(n._high)
+        low = self.make_canonical_int(n.low)
+        high = self.make_canonical_int(n.high)
 
         # Enforce canonicity via the 'apply trick' at this level.
         dec = n.dec
@@ -265,7 +203,8 @@ class XADD:
         dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
 
         # If reversed, swap low and high branches
-        if is_reversed: tmp = high; high = low; low = tmp
+        if is_reversed:
+            high, low = low, high
 
         ret = self.get_inode_canon(dec, low, high)
 
@@ -276,22 +215,22 @@ class XADD:
         self._reduce_canon_cache[node_id] = ret
         return ret
 
-    def check_local_ordering_and_exit_on_error(self, node_id):
+    def check_local_ordering_and_exit_on_error(self, node_id: int) -> None:
         """
         :param node_id:         (int)
         """
         node = self.get_exist_node(node_id)
-        if not node._is_leaf:
+        if not node.is_leaf():
             dec_id = node.dec
-            low_n = self.get_exist_node(node._low)
-            if not low_n._is_leaf:
+            low_n = self.get_exist_node(node.low)
+            if not low_n.is_leaf():
                 if dec_id >= low_n.dec:
                     # compare local order
                     print("Reordering problem: {} >= {}\n{}: {}\n{}: {}".
                           format(dec_id, low_n.dec, dec_id, self._id_to_expr[dec_id], low_n.dec, self._id_to_expr[low_n.dec]))
                     raise ValueError
-            high_n = self.get_exist_node(node._high)
-            if not high_n._is_leaf:
+            high_n = self.get_exist_node(node.high)
+            if not high_n.is_leaf():
                 if dec_id >= high_n.dec:
                     # compare local order
                     print("Reordering problem: {} >= {}\n{}: {}\n{}: {}".
@@ -299,9 +238,9 @@ class XADD:
                                  self._id_to_expr[high_n.dec]))
                     raise ValueError
 
-    def contains_node_id(self, root, target):
+    def contains_node_id(self, root: int, target: int) -> bool:
         """
-        Returns True if hte diagram in root contains a node with the target ID
+        Returns True if the diagram in root contains a node with the target ID
         :param root:            (int)
         :param target:          (int)
         :return:
@@ -309,59 +248,68 @@ class XADD:
         visited = set()
         return self.contains_node_id_int(root, target, visited)
 
-    def contains_node_id_int(self, id, target, visited):
-        if id == target: return True
-        if id in visited: return False
+    def contains_node_id_int(self, id: int, target: int, visited: set) -> bool:
+        if id == target:
+            return True
+        if id in visited:
+            return False
         visited.add(id)
         node = self.get_exist_node(id)
-        if not node._is_leaf:
-            if self.contains_node_id_int(node._low, target, visited): return True
-            if self.contains_node_id_int(node._high, target, visited): return True
+        if not node.is_leaf():
+            if self.contains_node_id_int(node.low, target, visited):
+                return True
+            if self.contains_node_id_int(node.high, target, visited):
+                return True
         return False
 
-    def get_inode_canon(self, dec, low, high):
+    def get_inode_canon(self, dec: int, low: int, high: int) -> int:
         if dec <= 0:
-            print("Warning: Canonizing Negative Decision: {} -> {}".format(dec, self._id_to_expr[abs(dec)]))
+            print(f"Warning: Canonizing Negative Decision: {dec} -> {self._id_to_expr[abs(dec)]}")
         result1 = self.get_inode_canon_apply_trick(dec, low, high)
         result2 = self.get_inode_canon_insert(dec, low, high)
 
         if result1 != result2 and not self.contains_node_id(result1, self.NAN):
             print("Canonical error (difference not on NAN)")
         return result2
-        # return result1
 
-    def get_inode_canon_insert(self, dec, low, high):
+    def get_inode_canon_insert(self, dec: int, low: int, high: int) -> int:
         false_half = self.reduce_insert_node(low, dec, self.ZERO, True)
         true_half = self.reduce_insert_node(high, dec, self.ZERO, False)
         return self.apply_int(true_half, false_half, 'sum')
 
-    def reduce_insert_node(self, orig, dec, node_to_insert_on_dec_value, dec_value):
+    def reduce_insert_node(
+            self, orig: int, dec: int, node_to_insert_on_dec_value: int, dec_value: bool
+    ) -> int:
         insertNodeCache = {}
-        return self.reduce_insert_node_int(orig, dec, node_to_insert_on_dec_value, dec_value, insertNodeCache)
+        return self.reduce_insert_node_int(
+            orig, dec, node_to_insert_on_dec_value, dec_value, insertNodeCache)
 
-    def reduce_insert_node_int(self, orig, dec, insertNode, dec_value, insertNodeCache):
+    def reduce_insert_node_int(
+            self, orig: int, dec: int, insertNode: int, dec_value: bool, insertNodeCache: dict
+    ) -> int:
         ret = insertNodeCache.get(orig, None)
         if ret is not None:
             return ret
 
         node = self.get_exist_node(orig)
-        if node._is_leaf or ((not node._is_leaf) and (not dec >= node.dec)):
+        if node.is_leaf() or (not node.is_leaf() and dec < node.dec):
             ret = self.get_internal_node(dec, orig, insertNode) if dec_value else self.get_internal_node(dec, insertNode, orig)
         else:
+            node = cast(XADDINode, node)
             if not node.dec >= dec:
-                low = self.reduce_insert_node_int(node._low, dec, insertNode, dec_value, insertNodeCache)
-                high = self.reduce_insert_node_int(node._high, dec, insertNode, dec_value, insertNodeCache)
+                low = self.reduce_insert_node_int(node.low, dec, insertNode, dec_value, insertNodeCache)
+                high = self.reduce_insert_node_int(node.high, dec, insertNode, dec_value, insertNodeCache)
                 ret = self.get_internal_node(node.dec, low, high)
             else:
                 if dec_value:
-                    ret = self.reduce_insert_node_int(node._low, dec, insertNode, dec_value, insertNodeCache)
+                    ret = self.reduce_insert_node_int(node.low, dec, insertNode, dec_value, insertNodeCache)
                 else:
-                    ret = self.reduce_insert_node_int(node._high, dec, insertNode, dec_value, insertNodeCache)
+                    ret = self.reduce_insert_node_int(node.high, dec, insertNode, dec_value, insertNodeCache)
 
         insertNodeCache[orig] = ret
         return ret
 
-    def get_inode_canon_apply_trick(self, dec, low, high):
+    def get_inode_canon_apply_trick(self, dec: int, low: int, high: int) -> int:
         ind_true = self.get_internal_node(dec, self.ZERO, self.ONE)
         ind_false = self.get_internal_node(dec, self.ONE, self.ZERO)
         true_half = self.apply_int(ind_true, high, 'prod')
@@ -374,7 +322,7 @@ class XADD:
         dec_expr: sympy.Basic,
         bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
         cont_assign: Dict[sympy.Symbol, Union[int, float]], 
-    ) -> bool:  
+    ) -> Union[bool, None]:
         if isinstance(dec_expr, boolalg.BooleanAtom):
             return bool(dec_expr)
         # if a decision expression is a single symbol, it should be a boolean decision
@@ -405,7 +353,7 @@ class XADD:
         Evaluates a given node by inserting boolean and real values into variables.
         """
         # Get the root node
-        node: Node = self.get_exist_node(node_id)
+        node = self.get_exist_node(node_id)
 
         # Traverse the decision diagram until leaf is found
         while isinstance(node, XADDINode):
@@ -416,7 +364,7 @@ class XADD:
                 return
             
             # Advance down to the next node
-            node = self.get_exist_node(node._high if branch_high else node._low)
+            node = self.get_exist_node(node.high if branch_high else node.low)
 
         # Now at a terminal node; evaluate the expression
         t: XADDTNode = cast(XADDTNode, node)
@@ -431,12 +379,12 @@ class XADD:
         if primitive_type:
             return float(expr)
         
-        # Return sympy type
+        # Otherwise, return sympy type
         return expr
     
-    def apply(self, id1, id2, op, annotation=None):
+    def apply(self, id1: int, id2: int, op: str, annotation=None) -> int:
         """
-        Recursively apply op(node1, node2). op can be min, max, sum, prod.
+        Recursively apply op(node1, node2). op can be min, max, sum, minus, prod.
         :param id1:
         :param id2:
         :param op:
@@ -448,7 +396,8 @@ class XADD:
             ret = self.make_canonical(ret)
         return ret
 
-    def get_apply_cache(self):
+    def get_apply_cache(self) -> dict:
+        """This code is not used in this branch"""
         assert self._opt_var is not None
         hm = self._apply_caches.get(self._opt_var, None)
         if hm is not None:
@@ -458,12 +407,12 @@ class XADD:
             self._apply_caches[self._opt_var] = hm
             return hm
 
-    def apply_int(self, id1, id2, op, annotation=None):
+    def apply_int(self, id1: int, id2: int, op: str, annotation=None) -> int:
         """
         Recursively apply op(node1, node2).
         :param id1:         (int) index of node 1
         :param id2:         (int) index of node 2
-        :param op:          (str) 'max', 'min', 'sum', 'prod'
+        :param op:          (str) 'max', 'min', 'sum', 'minus', 'prod'
         :return:
         """
         # Check apply cache and return if found
@@ -487,8 +436,8 @@ class XADD:
 
         if ret is None:
             # Determine the new decision expression
-            if not n1._is_leaf:
-                if not n2._is_leaf:
+            if not n1.is_leaf():
+                if not n2.is_leaf():
                     if n2.dec >= n1.dec:
                         dec = n1.dec
                     else:
@@ -499,14 +448,14 @@ class XADD:
                 dec = n2.dec
 
             # Determine next recursion for n1
-            if (not n1._is_leaf) and (n1.dec == dec):
-                low1, high1 = n1._low, n1._high
+            if (not n1.is_leaf()) and (n1.dec == dec):
+                low1, high1 = n1.low, n1.high
             else:
                 low1, high1 = id1, id1
 
             # Determine next recursion for n2
-            if (not n2._is_leaf) and (n2.dec == dec):
-                low2, high2 = n2._low, n2._high
+            if (not n2.is_leaf()) and (n2.dec == dec):
+                low2, high2 = n2.low, n2.high
             else:
                 low2, high2 = id2, id2
 
@@ -524,7 +473,9 @@ class XADD:
             self.get_apply_cache()[(id1, id2, op, annotation[0], annotation[1])] = ret
         return ret
 
-    def compute_leaf_node(self, id1, n1, id2, n2, op, annotation):
+    def compute_leaf_node(
+            self, id1: int, n1: Node, id2: int, n2: Node, op: str, annotation: Union[tuple, None]
+    ):
         """
         %Update%
         To support 0-1 knapsack problem with DP, summation operation now keep the track of annotation (when provided).
@@ -540,7 +491,7 @@ class XADD:
         :param n1:          (Node)
         :param id2:         (int)
         :param n2:          (Node)
-        :param op:          (str) 'max', 'min', 'sum', 'prod'
+        :param op:          (str) 'max', 'min', 'sum', 'minus', 'prod'
         :param annotation:  (tuple)
         :return:
         """
@@ -548,26 +499,18 @@ class XADD:
         # NaN cannot become valid by operations
         # But, this would not occur unless we intended..
         # Hence, just deal with NaNs when two leaf nodes are compared
-        if ((id1 == self.NAN) or (id2 == self.NAN)) and (n1._is_leaf and n2._is_leaf):
+        if ((id1 == self.NAN) or (id2 == self.NAN)) and (n1.is_leaf() and n2.is_leaf()):
             return self.NAN
         elif (id1 == self.NAN) or (id2 == self.NAN):
             return None
 
         # 0 * x = 0
-        if op == 'prod' and (
-                (id1 == self.ZERO or id2 == self.ZERO) and not (id1 == self.ZERO_ig or id2 == self.ZERO_ig)
-        ):
+        if op == 'prod' and (id1 == self.ZERO or id2 == self.ZERO):
             return self.ZERO
-        elif op == 'prod' and (
-                (id1 == self.ZERO_ig or id2 == self.ZERO_ig)
-        ):
-            return self.ZERO_ig
 
         # Identities (1 * x = x, 0 + x = x)
         if annotation is None:
             if (op == 'sum' and id1 == self.ZERO):
-                # if annotation is not None and self._problem_type == 'knapsack':
-                #     return self.get_leaf_node(n2.expr, annotation=n1._annotation + (annotation[1],))
                 return id2
             if (op == 'prod' and id1 == self.ONE):
                 return id2
@@ -576,17 +519,19 @@ class XADD:
 
         # Infinity identities
         # Due to annotations, XADDTNodes with oo or -oo as expression may have different node id.
-        # Therefore, check for node._is_leaf first.. and maintain annotations (if exist) always.
+        # Therefore, check for node.is_leaf() first.. and maintain annotations (if exist) always.
         # Furthermore, when n1.expr == n2.expr == oo (or -oo), we need to annotate the resulting oo (or -oo) node
         # as NaN, since those indicate infeasible paths.
-        if n1._is_leaf and n1.expr == oo:
-            if not n2._is_leaf:
+        if n1.is_leaf() and n1.expr == oo:
+            n1 = cast(XADDTNode, n1)
+            if not n2.is_leaf():
                 if op == 'max' or op == 'sum' or op == 'minus':
                     return self.get_leaf_node_from_node(n1)                 # To retain annotation (if exists)
                 elif op == 'min':
                     return id2
             else:
-                if n2.expr != oo and (op == 'max' or op == 'sum' or op == 'minus'):
+                n2 = cast(XADDTNode, n2)
+                if n2.expr != oo and (op in ('max', 'sum', 'minus')):
                     return self.get_leaf_node_from_node(n1)                 # To retain annotation (if exists)
                 elif n2.expr != oo and (op == 'min'):
                     return id2 if annotation is None else self.get_leaf_node(n2.expr, annotation[1])
@@ -595,53 +540,58 @@ class XADD:
                     # self.add_special_node(ret_node)
                     return ret_node
 
-        elif n1._is_leaf and n1.expr == -oo:
-            if not n2._is_leaf:
-                if op == 'sum' or op == 'minus' or op == 'min':
+        elif n1.is_leaf() and n1.expr == -oo:
+            n1 = cast(XADDTNode, n1)
+            if not n2.is_leaf():
+                if op in ('sum', 'minus', 'min'):
                     return self.get_leaf_node_from_node(n1)
                 elif op == 'max':
                     return id2
             else:
+                n2 = cast(XADDTNode, n2)
                 if n2.expr != -oo and (op in ('sum', 'min', 'minus')):
                     return self.get_leaf_node_from_node(n1)
                 elif n2.expr != -oo and op == 'max':
                     return id2 if annotation is None else self.get_leaf_node(n2.expr, annotation[1])
                 elif n2.expr == -oo and (op in ('max', 'min', 'sum')):
                     ret_node = self.get_leaf_node(-oo, annotation=self.NAN)
-                    # self.add_special_node(ret_node)
                     return ret_node
                 elif n2.expr == -oo and op == 'prod':
                     ret_node = self.get_leaf_node(oo, annotation=self.NAN)
-                    # self.add_special_node(ret_node)
                     return ret_node
 
-        if n2._is_leaf and n2.expr == oo:
+        if n2.is_leaf() and n2.expr == oo:
             # n1 cannot be oo or -oo at this point..
+            n2 = cast(XADDTNode, n2)
             if op == 'sum' or op == 'max':
                 return self.get_leaf_node_from_node(n2)
             elif op == 'min':
                 if annotation is None:      # If annotation is given, need to annotate them at leaf nodes
                     return id1
-                if n1._is_leaf:         # For non-leaf nodes,
+                if n1.is_leaf():
                     return self.get_leaf_node(n1.expr, annotation[0])
             elif op == 'minus':
                 return self.NEG_oo
-        elif n2._is_leaf and n2.expr == -oo:
+        elif n2.is_leaf() and n2.expr == -oo:
+            n2 = cast(XADDTNode, n2)
             if op == 'sum' or op == 'min':
                 return self.get_leaf_node_from_node(n2)
             elif op == 'max':
-                if not n1._is_leaf:
+                if not n1.is_leaf():
                     return id1
                 else:
                     return id1 if annotation is None else self.get_leaf_node(n1.expr, annotation[0])
             elif op == 'minus':
                 return self.oo
 
-        if n1._is_leaf and n2._is_leaf:
+        if n1.is_leaf() and n2.is_leaf():
+            n1 = cast(XADDTNode, n1); n2 = cast(XADDTNode, n2)
+
             if id1 == self.NAN or id2 == self.NAN:
                 return self.NAN
+            
             # Operations: +, -, *
-            # No need to take care of annotations for these operations unless in Knapsack problems
+            # No need to take care of annotations for these operations
             if op != 'max' and op != 'min':
                 n1_expr, n2_expr = n1.expr, n2.expr
                 if op == 'sum':
@@ -650,28 +600,7 @@ class XADD:
                     result = n1_expr - n2_expr
                 else:
                     result = sympy.expand(n1_expr * n2_expr)
-
-                # (deprecated) annotation is given in knapsack DP algorithm: need to simply concatenate the current item id
-                if annotation is not None and self._problem_type == 'knapsack':
-                    return self.get_leaf_node(result, n1._annotation + (annotation[1],))
-                # annotation is given in 'sum' operation... used to handle factorization of bilinear terms during SVE
-                elif annotation is not None and op == 'sum':
-                    if id1 == self.ZERO_ig and id2 != self.ZERO_ig:
-                        return self.get_leaf_node(result, annotation[1])
-                    elif id1 != self.ZERO_ig and id2 == self.ZERO_ig:
-                        return self.get_leaf_node(result, annotation[0])
-                    elif id1 == self.ZERO_ig and id2 == self.ZERO_ig:
-                        logger.warning("Both leaf nodes are ZERO_ig nodes. Annotation is provided but will be ignored")
-                        return self.get_leaf_node(result)
-                    elif id1 == self.ZERO:
-                        return self.get_leaf_node(result, annotation[1])
-                    elif id2 == self.ZERO:
-                        return self.get_leaf_node(result, annotation[0])
-                    else:
-                        logger.warning("annotations are given for 'sum' op, but cannot determine which to use")
-                        return self.get_leaf_node(result)
-                else:
-                    return self.get_leaf_node(result)
+                return self.get_leaf_node(result)
 
             # The canonical form of decision expression: (lhs - rhs <= 0)
             lhs = n1.expr - n2.expr
@@ -679,12 +608,12 @@ class XADD:
             expr = lhs <= rhs
 
             # handle tautological cases
-            if expr == sympy.S.true:
+            if expr == sympy.S.true:        # n1 <= n2 holds
                 if op == 'min':
                     return self.get_leaf_node(n1.expr, annotation[0]) if annotation is not None else id1
                 else:
                     return self.get_leaf_node(n2.expr, annotation[1]) if annotation is not None else id2
-            elif expr == sympy.S.false:
+            elif expr == sympy.S.false:     # n1 > n2 holds
                 if op == 'min':
                     return self.get_leaf_node(n2.expr, annotation[1]) if annotation is not None else id2
                 else:
@@ -719,13 +648,13 @@ class XADD:
                 expr_index2, is_reversed2 = self.get_dec_expr_index(expr2 <= 0, create=True)
 
                 if bool(is_reversed) ^ bool(is_reversed1):
-                    tmp = id2; id2 = id1; id1 = tmp
+                    id1, id2 = id2, id1
 
                 high_node = self.get_internal_node(expr_index1, low=id1, high=id2)
                 low_node = self.get_internal_node(expr_index1, low=id2, high=id1)
 
                 if is_reversed2:
-                    tmp = high_node; high_node = low_node; low_node = tmp
+                    high_node, low_node = low_node, high_node
                 low = high_node if op == 'max' else low_node
                 high = low_node if op == 'max' else high_node
                 ret = self.get_internal_node(expr_index2, low=low, high=high)
@@ -735,14 +664,14 @@ class XADD:
 
                 # Swap low and high branches if reversed
                 if is_reversed:
-                    tmp = id2; id2 = id1; id1 = tmp
+                    id1, id2 = id2, id1
                 low = id1 if op == 'max' else id2
                 high = id2 if op == 'max' else id1
 
                 return self.get_internal_node(expr_index, low=low, high=high)
         return None
 
-    def substitute(self, node_id, subst_dict):
+    def substitute(self, node_id: int, subst_dict: dict) -> int:
         """
         Symbolic substitution method.
         :param node_id:             (int)
@@ -753,11 +682,11 @@ class XADD:
         return self.reduce_sub(node_id, subst_dict, subst_cache)
 
     def reduce_sub(        
-        self, 
-        node_id: int, 
-        subst_dict: Dict[sympy.Symbol, Union[sympy.Basic, float, int]], 
-        subst_cache: Dict[int, int],
-    ):
+            self, 
+            node_id: int,
+            subst_dict: Dict[sympy.Symbol, Union[sympy.Basic, float, int]], 
+            subst_cache: Dict[int, int],
+    ) -> int:
         """
 
         :param node_id:
@@ -765,11 +694,11 @@ class XADD:
         :param subst_cache:
         :return:
         """
-        node: Node = self.get_exist_node(node_id)
+        node = self.get_exist_node(node_id)
 
         # A terminal node should be reduced by default
-        if node._is_leaf:
-            node: XADDTNode = cast(XADDTNode, node)
+        if node.is_leaf():
+            node = cast(XADDTNode, node)
             expr = node.expr
             if len(expr.free_symbols.intersection(set(subst_dict.keys()))) > 0:
                 expr = expr.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in subst_dict.items()})
@@ -783,9 +712,9 @@ class XADD:
             return ret
 
         # Handle an internal node
-        node: XADDINode = cast(XADDINode, node)
-        low = self.reduce_sub(node._low, subst_dict, subst_cache)
-        high = self.reduce_sub(node._high, subst_dict, subst_cache)
+        node = cast(XADDINode, node)
+        low = self.reduce_sub(node.low, subst_dict, subst_cache)
+        high = self.reduce_sub(node.high, subst_dict, subst_cache)
 
         dec = node.dec
         dec_expr = self._id_to_expr[dec]
@@ -806,11 +735,10 @@ class XADD:
             lhs = dec_expr.lhs
             if len(lhs.free_symbols.intersection(set(subst_dict.keys()))) > 0:
                 lhs = lhs.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in subst_dict.items()})
-                    # Check if the expression holds in equality and the true branch is NaN
-                    # Assuming canonical expression.. rhs is always 0. Hence, lhs == 0 iff dec_expr == S.true.
-                    # In this case, set dec_expr = False, so that false branch can be chosen instead.
-                    # lhs = lhs.subs(sub_out, sub_in)
-
+            
+            # Check if the expression holds in equality and the true branch is NaN
+            # Assuming canonical expression.. rhs is always 0. Hence, lhs == 0 iff dec_expr == S.true.
+            # In this case, set dec_expr = False, so that false branch can be chosen instead.
             if lhs == 0 and high == self.NAN:
                 dec_expr = S.false
             elif lhs == 0 and low == self.NAN:
@@ -830,7 +758,7 @@ class XADD:
 
         # Swap low and high branches if reversed
         if is_reversed:
-            tmp = high; high = low; low = tmp
+            high, low = low, high
 
         # # Substitution could have affected variable ordering.
         if not self._direct_substitution:
@@ -843,15 +771,16 @@ class XADD:
         subst_cache[node_id] = ret
         return ret
 
-    def substitute_bool_vars(self, node_id, subst_dict):
+    def substitute_bool_vars(self, node_id: int, subst_dict: dict) -> int:
         """
         Symbolic substitution method for bool variables.
         :param node_id:             (int)
         :param subst_dict:          (dict)
         :return:
         """
-        assert all(map(lambda x: isinstance(x, boolalg.BooleanAtom) or isinstance(x, bool), subst_dict.values())),\
-            "All values of the `subst_dict` should be boolean type"
+        assert all(
+                    map(lambda x: isinstance(x, boolalg.BooleanAtom) or isinstance(x, bool), subst_dict.values())
+                ), "All values of the `subst_dict` should be boolean type"
         varSet = self.collect_vars(node_id)
         for var in subst_dict:
             if var in varSet:
@@ -862,7 +791,7 @@ class XADD:
                     node_id = self.op_out(node_id, dec, "restrict_low")
         return node_id
 
-    def op_out(self, node_id, dec_id, op):
+    def op_out(self, node_id: int, dec_id: int, op: str):
         ret = self.reduce_op(node_id, dec_id, op)
 
         # Operations like sum and product may get decisions out of order
@@ -876,7 +805,7 @@ class XADD:
 
         # A terminal node should be reduced (and cannot be restricted)
         # by default if hashing and equality testing are working in getLeafNode
-        if node._is_leaf:
+        if node.is_leaf():
             return node_id      # Assuming that to have a node id means canonical
 
         # If its an internal node, check the reduce cache
@@ -884,11 +813,12 @@ class XADD:
         ret = self._reduce_cache.get(temp_reduce_key, None)
         if ret is not None:
             return ret
-        node: XADDINode = cast(XADDINode, node)
+        
+        node = cast(XADDINode, node)
         if (op != "restrict_high") or (dec_id != node.dec):
-            low = self.reduce_op(node._low, dec_id, op)
+            low = self.reduce_op(node.low, dec_id, op)
         if (op != "restrict_low") or (dec_id != node.dec):
-            high = self.reduce_op(node._high, dec_id, op)
+            high = self.reduce_op(node.high, dec_id, op)
         #if (op != -1 & & var_id != -1 & & var_id == inode._var) {
         if (dec_id != -1) and (dec_id == node.dec):
             # ReduceOp
@@ -907,101 +837,62 @@ class XADD:
         self._reduce_cache[temp_reduce_key] = ret
         return ret
 
-    def collect_vars(self, node_id):
+    def collect_vars(self, node_id: int) -> set:
         node = self.get_exist_node(node_id)
         var_set = set()
         node.collect_vars_(var_set)
         return var_set
 
-    def reduced_arg_min_or_max(self, node_id, var):
+    def reduced_arg_min_or_max(self, node_id: int, var) -> int:
         arg_id = self.get_arg(node_id)
         arg_id = self.reduce_lp(arg_id)
         self.update_anno(var, arg_id)
         return arg_id
 
-    def get_arg(self, node_id, is_min=True):
+    def get_arg(self, node_id: int, is_min: bool = True) -> int:
         self._is_min = is_min
         ret = self.get_arg_int(node_id)
         return self.make_canonical(ret)
 
-    def get_arg_int(self, node_id):
+    def get_arg_int(self, node_id: int) -> int:
         """
-        node_id is the id of a min/max XADD node. var is the decision variable that was max(min)imized out to result in
-        node_id. Recursively build the annotation XADD for var.
+        node_id is the id of a min/max XADD node. 
+        var is the decision variable that was max(min)imized out to result in node_id. 
+        Recursively build the annotation XADD for var.
         :param node_id:             (int)
         :return:
         """
         node = self.get_exist_node(node_id)
 
-        if node._is_leaf:
+        if node.is_leaf():
             annotation = node._annotation
             if annotation is None and (node.expr == oo or node.expr == -oo):    # Annotate infeasibility
                 annotation = self.NAN
             return annotation
         else:
-            low = self.get_arg_int(node._low)
-            high = self.get_arg_int(node._high)
+            low = self.get_arg_int(node.low)
+            high = self.get_arg_int(node.high)
 
             dec = node.dec
             dec_expr = self._id_to_expr[dec]
             dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
             # Swap low and high branches if reversed
             if is_reversed:
-                tmp = high; high = low; low = tmp
+                high, low = low, high
             return self.get_inode_canon(dec, low, high)
 
-    def argmin_or_max(self, varOrder, resubstitution=True):
-        """
-        Once all decision variables are min(max)imized, we get argmin(max) over each variable from get_arg method.
-        Then, we need to provide the variable order with which optimization is done, and we sequentially
-        substitute annotations of outer variables into inner variables to get argmin(max) of all variables.
-
-        The resulting annotation XADDs should be referenced by self._var_to_anno.
-        :param varOrder:            (list) List of sympy.Symbol variables
-        :return:
-        """
-        varOrder = self._eliminated_var + varOrder
-        num_var = len(varOrder)
-        self._prune_equality = False
-        self.RLPContext.flush_implications()
-
-        print("\nComputing argmin of decision variables")
-        for i in tqdm(range(num_var-2, -1, -1), desc="Variables"):
-            curr_var = varOrder[i]
-            curr_anno = self.get_annotation(curr_var)
-
-            # Substitute all previous annotations sequentially to the current annotation
-            # That is, for ith variable, substitute in i+1, ..., num_var-1 variables
-            for j in range(num_var-1, i, -1):
-                outer_var = varOrder[j]
-                outer_anno = self.get_annotation(outer_var)
-                substitution = DeltaFunctionSubstitution(outer_var, curr_anno, self)
-                curr_anno = self.reduce_process_xadd_leaf(outer_anno, substitution, [], [])
-            self.update_anno(curr_var, self.reduce_lp(curr_anno))
-
-        # Turn pruning equality decisions back on
-        self._prune_equality = True
-        self.RLPContext.flush_implications()
-
-        for i in tqdm(range(num_var), desc='Perform reduce LP'):
-            v = varOrder[i]
-            v_anno = self.get_annotation(v)
-            v_anno = self.reduce_lp(v_anno)
-            # if resubstitution:
-            #     v_anno = self.resubst_params(v_anno)
-            self.update_anno(v, v_anno)
-        return self.get_all_anno()
-
-    def get_all_anno(self):
+    def get_all_anno(self) -> Dict[sympy.Symbol, int]:
         return self._var_to_anno
 
-    def get_annotation(self, var):
+    def get_annotation(self, var: sympy.Symbol) -> int:
         return self._var_to_anno[var]
 
-    def update_anno(self, var, anno):
+    def update_anno(self, var: sympy.Symbol, anno: int):
+        if not hasattr(self, '_var_to_anno'):
+            self._var_to_anno: Dict[sympy.Symbol, int] = {}
         self._var_to_anno[var] = anno
 
-    def get_node(self, node_id):
+    def get_node(self, node_id: int) -> Node:
         """
         Retrieve a XADD node from cache.
         :param node_id:             (int)
@@ -1009,7 +900,9 @@ class XADD:
         """
         return self._id_to_node[node_id]
 
-    def min_or_max_multi_var(self, node_id, var_lst, is_min=True, annotate=True):
+    def min_or_max_multi_var(
+            self, node_id: int, var_lst: List[sympy.Symbol], is_min: bool = True, annotate: bool = True,
+    ):
         """
         Given an XADD root node 'node_id', minimize (or maximize) variables in 'var_lst'.
         Supports only continuous variables.
@@ -1051,21 +944,13 @@ class XADD:
             running_result = min_or_max._running_result
         return running_result
 
-    def depth_first_reduce_xadd_leaf(self, node_id, leaf_op, decisions, decision_values):
-        """
-        This function applies `reduce` subroutine recursively in the depth-first manner.
-        For example, when we perform multivariate symbolic minimization of a case function,
-         `reduce_process_xadd_leaf` already traverses the diagram in the depth-first manner.
-         At the leaf node, however, only a single variable is minimized out, then we minimize out the variable
-         from another partition, whose result is compared to the earlier one.
-        Instead, what we want to achieve here is this: once we get the resulting case function of a single variable
-         minimization, then we perform minimization of the function w.r.t. the next variable. This will produce yet
-         another case function, and we repeat until there's no remaining variables to optimize.
-        """
-        pass
-
-
-    def reduce_process_xadd_leaf(self, node_id, leaf_op, decisions, decision_values):
+    def reduce_process_xadd_leaf(
+            self, 
+            node_id: int, 
+            leaf_op,        # XADDLeafOperation
+            decisions: list, 
+            decision_values: list
+    ):
         """
 
         :param node_id:
@@ -1075,7 +960,7 @@ class XADD:
         :return:
         """
         node = self.get_exist_node(node_id)
-        if node._is_leaf:
+        if node.is_leaf():
             return leaf_op.process_xadd_leaf(decisions, decision_values, node.expr)
 
         # Internal node
@@ -1084,11 +969,11 @@ class XADD:
         # Recurse the False branch
         decisions.append(dec_expr)
         decision_values.append(False)
-        low = self.reduce_process_xadd_leaf(node._low, leaf_op, decisions, decision_values)
+        low = self.reduce_process_xadd_leaf(node.low, leaf_op, decisions, decision_values)
 
         # Recurse the True branch
         decision_values[-1] = True
-        high = self.reduce_process_xadd_leaf(node._high, leaf_op, decisions, decision_values)
+        high = self.reduce_process_xadd_leaf(node.high, leaf_op, decisions, decision_values)
 
         decisions.pop()
         decision_values.pop()
@@ -1097,24 +982,28 @@ class XADD:
         if isinstance(leaf_op, DeltaFunctionSubstitution):
             ret = self.make_canonical(ret)
 
-        # Put return value in cache and return
+        # Put return value in cache and return  # TODO: this does not distinguish different leaf operations
         self._reduce_leafop_cache[node_id] = ret
         return ret
 
-    def substitute_xadd_for_var_in_expr(self, leaf_val, var, xadd):
+    def substitute_xadd_for_var_in_expr(
+            self, leaf_val: sympy.Basic, var: sympy.Symbol, xadd: int
+    ) -> int:
         """
-        Substitute XADD into 'var' that occurs in 'val' (a Sympy expression). This is only called for
-        leaf expressions.
+        Substitute XADD into 'var' that occurs in 'val' (a Sympy expression). 
+        This is only called for leaf expressions.
+
         :param leaf_val:    (sympy.Basic) sympy expression
         :param var:         (sympy.Symbol) variable to substitute
         :param xadd:        (int) integer that indicates the XADD to substitute into 'var'
         :return:
         """
         # Get the root node
-        node = self._id_to_node[xadd]
+        node = self.get_exist_node(xadd)
 
         # Handle leaf node cases: simply substitute leaf expression into 'var' in leaf_val
-        if node._is_leaf:
+        if node.is_leaf():
+            node = cast(XADDTNode, node)
             xadd_leaf_expr = node.expr
             # expr = leaf_val.subs(var, xadd_leaf_expr)
             expr = leaf_val.xreplace({var: xadd_leaf_expr})
@@ -1137,7 +1026,7 @@ class XADD:
             return node_id
 
         # Internal nodes: get low and high branches and do recursion
-        low, high = node._low, node._high
+        low, high = node.low, node.high
         low = self.substitute_xadd_for_var_in_expr(leaf_val, var, low)
         high = self.substitute_xadd_for_var_in_expr(leaf_val, var, high)
 
@@ -1146,12 +1035,12 @@ class XADD:
 
         return node_id
 
-    def get_repr(self, node_id):
+    def get_repr(self, node_id: int) -> str:
         # For printing out the representation
         node = self._id_to_node[node_id]
         return repr(node)
 
-    def get_leaf_node_from_node(self, node):
+    def get_leaf_node_from_node(self, node: XADDTNode) -> int:
         """
         :param node:            (Node) If Node object is passed.. also take annotation into consideration
         :return:
@@ -1159,7 +1048,7 @@ class XADD:
         expr, annotation = node.expr, node._annotation
         return self.get_leaf_node(expr, annotation)
 
-    def get_leaf_node(self, expr, annotation=None):
+    def get_leaf_node(self, expr: sympy.Basic, annotation: Optional[int] = None) -> int:
         """
         :param expr:            (sympy.Basic) symbolic expression, not id
         :param annotation:      (int) id of annotation XADD
@@ -1188,7 +1077,9 @@ class XADD:
                     self._id_to_cvar[num_existing_cvar] = v
         return node_id
 
-    def get_dec_node(self, dec_expr, low_val, high_val):
+    def get_dec_node(
+            self, dec_expr: relational.Rel, low_val: Union[float, int, bool], high_val: Union[float, int, bool]
+    ) -> int:
         """
         Get decision node with relational expression having dec, whose low and high values are also given.
         :param dec_expr:            (sympy.relational.Rel)
@@ -1201,50 +1092,12 @@ class XADD:
         high = self.get_leaf_node(high_val)
         # Swap low and high branches if reversed
         if is_reversed:
-            tmp = high; high = low; low = tmp
+            high, low = low, high
         return self.get_internal_node(dec, low, high)
-
-    # def clean_up_expr(self, expr, factor=False):
-    #     is_reversed = False
-
-        # Divide lhs by the coefficient of the first term (cannot be a negative number)
-        # coeff_first_term = expr.as_ordered_terms()[0]
-        # if isinstance(coeff_first_term, sympy.core.Number):
-        #     coeff_first_term = expr.as_ordered_terms()[1]
-        #
-        # if isinstance(coeff_first_term, sympy.core.Mul):
-        #     arg1 = coeff_first_term.args[0]
-        #     if isinstance(arg1, sympy.core.Number) and arg1 > 0:
-        #         expr = expr / arg1
-        #     elif isinstance(arg1, sympy.core.Number) and arg1 < 0:
-        #         expr = expr / arg1
-        #         is_reversed = True if not is_reversed else False  # divided by a negative number changes the direction of inequality
-
-        # if factor:
-        #     # lhs = lhs - rhs
-        #     ret_expr = self._factor_cache.get(expr, None)
-        #     if ret_expr is not None:
-        #         expr = ret_expr
-        #     else:
-        #         ret_expr = sympy.factor(expr)
-        #         self._factor_cache[expr] = ret_expr
-        #         expr = ret_expr
-        #
-        #     # When lhs is factored, check if a constant is multiplied, in which case we divide both sides by the constant
-        #     # and make sure the inequality holds
-        #     if isinstance(expr, sympy.core.Mul):
-        #         arg1 = expr.args[0]
-        #         # By default, sympy will always put constants at front. So, checking arg1 suffices.
-        #         if isinstance(arg1, sympy.core.Number) and arg1 > 0:
-        #             expr = expr / arg1
-        #         elif isinstance(arg1, sympy.core.Number) and arg1 < 0:
-        #             expr = expr / arg1
-        #             is_reversed = True if not is_reversed else False    # divided by a negative number changes the direction of inequality
-        #
-        #     return expr, is_reversed
-
-
-    def canonical_dec_expr(self, expr):
+    
+    def canonical_dec_expr(
+            self, expr: sympy.Basic
+    ) -> Tuple[Union[Tuple[sympy.Basic, sympy.Basic], sympy.Basic], bool]:
         """
         Return canonical form of an expression.
         It should always take either one of the two forms: expr.lhs <= 0 or expr.lhs >= 0.
@@ -1270,7 +1123,7 @@ class XADD:
         if rel == '>=' or rel == '>':
             is_reversed = True
 
-        # Try factorization when the degree of expression is high
+        # Try factorization when the degree of expression is higher than 1
         poly = lhs.as_poly()
         deg = poly.total_degree()
 
@@ -1286,7 +1139,8 @@ class XADD:
                     lhs = lhs / arg1
                 elif isinstance(arg1, sympy.core.Number) and arg1 < 0:
                     lhs = lhs / arg1
-                    is_reversed = True if not is_reversed else False    # divided by a negative number changes the direction of inequality
+                    # divided by a negative number changes the direction of inequality
+                    is_reversed = True if not is_reversed else False
 
             expr = relational.Relational(lhs, 0, "<=")
             return expr, is_reversed
@@ -1303,7 +1157,9 @@ class XADD:
         else:
             raise ValueError("An expression with degree higher than 2 is not supported (yet?)")
 
-    def factor_expr(self, expr):
+    def factor_expr(
+            self, expr: sympy.Basic
+    ) -> Tuple[Union[Tuple[sympy.Basic, sympy.Basic], sympy.Basic], bool]:
         ret = self._factor_cache.get(expr, None)
         is_reversed = False
 
@@ -1336,12 +1192,15 @@ class XADD:
                     is_reversed = True if not is_reversed else False
 
         if isinstance(expr, sympy.core.Mul):
+            # This check works only for bilinear (or quadratic) expressions
             assert len(expr.args) <= 2, "Once a constant multiplication is removed, there should be maximum 2 args"
             return expr.args, is_reversed
         else:
             return expr, is_reversed
 
-    def get_dec_expr_index(self, expr, create, canon=False):
+    def get_dec_expr_index(
+            self, expr: sympy.Basic, create: bool, canon: bool = False
+    ) -> Tuple[Union[boolalg.BooleanAtom, int], bool]:
         """
         Given a symbolic expression 'expr', return the index of the expression in XADD._id_to_expr.
         :param expr:            (sympy.Basic)
@@ -1366,21 +1225,7 @@ class XADD:
         # If nothing's found, create one and store
         else:
             vars_in_expr = expr.free_symbols.copy()
-            # if vars_in_expr.intersection(self._free_var_set):
-            #     index = len(self._expr_to_id) + LARGE_INTEGER  # Make expr_id start from 1 (0: NullDec)
-            # else:
-            #     index = len(self._expr_to_id)
-            deg = 1
-            if isinstance(expr, relational.Rel):
-                poly = expr.lhs.as_poly()
-                deg = poly.total_degree()
-            if deg > 1:
-                index = len(self._expr_to_id) + LARGE_INTEGER ** 2  # Make expr_id start from 1 (0: NullDec)
-            elif vars_in_expr.intersection(self._free_var_set):
-                index = len(self._expr_to_id) + LARGE_INTEGER       # TODO: need to prevent overwriting...
-            else:
-                index = len(self._expr_to_id)
-
+            index = XADD._func_var_index(self, expr)
             self._expr_to_id[expr] = index
             self._id_to_expr[index] = expr
 
@@ -1389,6 +1234,7 @@ class XADD:
                 self._bool_var_set.update(vars_in_expr)
             # Relational decision
             else:
+                
                 diff_vars = vars_in_expr.difference(self._var_set)
                 for v in diff_vars:
                     num_existing_cvar = len(self._var_set)
@@ -1398,7 +1244,7 @@ class XADD:
                     self._id_to_cvar[num_existing_cvar] = v
         return index, is_reversed
 
-    def get_exist_node(self, node_id):
+    def get_exist_node(self, node_id: int) -> Node:
         node = self._id_to_node.get(node_id, None)
         if node is None:
             print("Unexpected Missing node: " + node_id)
@@ -1413,7 +1259,7 @@ class XADD:
         :return:            (int) return id of node
         """
         if dec_id < 0:
-            tmp = high; high = low; low = tmp
+            high, low = low, high
             dec_id = -dec_id
 
         # Check if low == high
@@ -1441,7 +1287,7 @@ class XADD:
     """
     Verifying feasibility and redundancy of all paths in the XADD
     """
-    def reduce_lp(self, node_id: int):
+    def reduce_lp(self, node_id: int) -> int:
         """
         Consistency and redundancy checking
         :param node_id:     (int) Node id
@@ -1466,10 +1312,6 @@ class XADD:
 
     def remove_special_node(self, n: int):
         self._special_nodes.discard(n)
-
-    def add_annotations_to_special_nodes(self):
-        for v, v_anno in self.get_all_anno().items():
-            self._special_nodes.add(v_anno)
 
     def flush_caches(self):
         logger.info(f"[FLUSHING CACHES...  {len(self._node_to_id) + len(self._id_to_node)}, nodes -> ")
@@ -1510,17 +1352,12 @@ class XADD:
         if node_id in self._id_to_node_new:
             return
         node = self.get_exist_node(node_id)
-        if not node._is_leaf:
-            # dec_id = node.dec
-            # dec_expr = self._id_to_expr[dec_id]
-
+        if not node.is_leaf():
             # Copy node and node id
             self._id_to_node_new[node_id] = node
             self._node_to_id_new[node] = node_id
 
             # Copy decision expr and its id
-            # self._id_to_expr_new[dec_id] = dec_expr
-            # self._expr_to_id_new[dec_expr] = dec_id
 
             # Recurse
             self.copy_in_new_cache_node(node._high)
@@ -1532,57 +1369,9 @@ class XADD:
     """
     Export and import XADDs
     """
-    def export_min_or_max_xadd(self, fname: str, min_or_max_node_id: int):
-        """
-        Export the min xadd to a file named `fname`.
-        Some additional information is also exported, for example:
-
-        """
-        with open(fname, 'w+') as f:
-            # Write information regarding problem definition
-            f.write(f'Problem type: {self._problem_type}\n')
-            f.write(f'Config file: {self._config_json_fname}\n')
-            dec_vars = ', '.join([str(v) for v in sorted(self._free_var_set, key=lambda x: str(x))])
-            f.write(f'Decision variables: {dec_vars}\n')
-            bounds = ':'.join([f'{bound}' for v, bound in sorted(self._var_to_bound.items(), key=lambda x: str(x[0]))
-                               if v in self._free_var_set])
-            f.write(f'Bounds: {bounds}\n')
-
-            # Write the LP
-            f.write(f'\nlp: ')
-        self.export_xadd(min_or_max_node_id, fname, append=True)
-
-    def export_argmin_or_max_xadd(self, fname: str):
-        """
-        Export the argmin xadd of `min_var` variables to a file named `fname`.
-        Some additional information is also exported: such as
-            name of decision variables
-            bounds of those variables
-            dimensionality of parameters and features
-
-        :param fname:       (str) the file name to which argmin(max) xadd is exported
-        """
-        # Write information regarding problem definition
-        with open(fname, 'w+') as f:
-            f.write(f'Problem type: {self._problem_type}\n')
-            f.write(f'Config file: {self._config_json_fname}\n')
-            dec_vars = ', '.join([str(v) for v in sorted(self._min_var_set, key=lambda x: str(x))])
-            f.write(f'Decision variables: {dec_vars}\n')
-            bounds = ':'.join([f'{bound}' for bound in sorted(
-                [b for v, b in self._var_to_bound.items() if v in self._min_var_set], key=lambda x: str(x))])
-            f.write(f'Bounds: {bounds}\n')
-            if self._feature_dim is not None:
-                f.write('Feature dimension: {}\n'.format(self._feature_dim))
-
-        for var in self._min_var_set:
-            with open(fname, 'a+') as f:
-                f.write(f'\n{str(var)}: ')
-            var_arg_min_or_max = self._var_to_anno.get(var)
-            self.export_xadd(var_arg_min_or_max, fname, append=True)
-
     def export_xadd(self, node_id: int, fname: str, append: bool = False):
         """
-        Export the XADD node to a .xadd file.
+        Export the XADD node to a file.
         If append is True, then open the file in the append mode.
         """
         # Firstly, turn off printing node info
@@ -1598,204 +1387,34 @@ class XADD:
         else:
             with open(fname, 'w+') as f:
                 f.write(str(node))
+
+        # Turn the printing mode back on
         node.turn_on_print_node_info()
 
-    def import_xadd(self, fname=None, xadd_str=None, locals=None, to_canonical=True):
+    def import_xadd(
+            self, 
+            fname: Optional[str] = None,
+            xadd_str: Optional[str] = None,
+            locals: Optional[dict] = None,
+            to_canonical: bool = True
+    ) -> int:
         """
-        Import the XADD node defined in the input file or in a string.
+        Import the XADD node defined in an input file or in a string.
         """
-        assert (fname is not None and xadd_str is None) or \
-               (fname is None and xadd_str is not None)
+        assert (fname is not None and xadd_str is None) or (fname is None and xadd_str is not None),\
+            "Specify either a file name or a string, not both"
 
         if fname is not None:
             with open(fname, 'r') as f:
                 xadd_str = f.read().replace('\n', '')
-        # When it is just a leaf expression: not supported
+        
+        # Note: when it is just a leaf expression: not supported
         if xadd_str.rfind('(') == 0 and xadd_str.rfind('[') == 2:
             xadd_as_list = [sympy.sympify(xadd_str.strip('( [] )'), locals=locals)]
         else:
             xadd_as_list = parse_xadd_grammar(xadd_str, ns=locals if locals is not None else {})[1][0]
-        xadd = self.build_initial_xadd(xadd_as_list, to_canonical=to_canonical)
-        return xadd
-
-    def import_lp_xadd(self, fname, model_name=None, prob_instance: dict = None):
-        """
-        Read in the XADD corresponding to an LP.
-        """
-        ns = {}
-        xadd_str = ''
-        dec_var = None
-
-        # Check existence of the file
-        import os.path as path
-        if not path.exists(fname):
-            raise FileNotFoundError("File {} does not exist, raising an error".format(fname))
-        with open(fname, 'r') as f:
-            for i, line in enumerate(f.readlines()):
-                line_split = line.split(':')
-                if i == 0:
-                    assert line_split[0].lower() == 'problem type', "Problem type should be specified"
-                    logger.info(f"Problem type: {line_split[1].strip().lower()}")
-                    self.set_problem(line_split[1].strip().lower())
-
-                elif i == 1:
-                    assert line_split[0].lower() == 'config file', "Path to the configuration file should be provided"
-                    json_file = fname.replace('.xadd', '.json')
-                    logger.info(line.strip())
-                    self.link_json_file(json_file)
-
-                elif i == 2:
-                    assert line_split[0].lower() == 'decision variables', "Decision variables should be specified in the file"
-                    symbols = line_split[1].strip().split(',')
-                    dec_vars = sympy.symbols(symbols)
-                    dec_vars = list(sorted(dec_vars, key=lambda x: (float(str(x).split("_")[0][1:]), float(str(x).split("_")[1]))
-                                            if len(str(x).split("_")) > 1 else float(str(x)[1:])))
-                    ns.update({str(v): v for v in dec_vars})
-                    logger.info(line.strip())
-                    self._free_var_set = set(dec_vars)
-
-                elif i == 3:
-                    assert line_split[0].lower() == 'bounds', "Bound information should be provided"
-                    bound_dict = {ns[str(v)]: tuple(map(float, line_split[i+1].strip()[1:-1].replace('oo', 'inf').split(',')))
-                                  for i, v in enumerate(dec_vars)}
-                    self._var_to_bound.update(bound_dict)
-                    logger.info(line.strip())
-
-                elif len(line_split) > 1:
-                    if len(xadd_str) > 0:
-                        raise ValueError
-                    xadd_str = line_split[1].strip()
-                    obj = sympy.symbols(line_split[0])
-                    ns.update({str(obj): obj})
-
-                elif len(line.strip()) != 0:
-                    xadd_str += line
-            if len(xadd_str) > 0:
-                lp = self.import_xadd(xadd_str=xadd_str, locals=ns)
-
-        # Handle equality constraints if exist by looking at the configuration json file
-        if prob_instance is None:
-            try:
-                import json
-                with open(self._config_json_fname, "r") as json_file:
-                    prob_instance = json.load(json_file)
-            except:
-                raise FileNotFoundError("Failed to open the configuration json file!")
-
-        eq_constr_dict, dec_vars = compute_rref_filter_eq_constr(prob_instance['eq-constr'], dec_vars,
-                                                                 locals=ns)
-        dec_vars = [v for v in dec_vars if v not in eq_constr_dict]
-
-        # Name space
-        ns.update({str(v): v for v in eq_constr_dict})
-        ns.update({str(v): v for v in dec_vars})
-        self.update_name_space(ns)
-
-        # LP objective node
-        self.set_objective(lp)
-
-        return dec_vars, eq_constr_dict
-
-    def import_arg_xadd(self, fname, feature_dim=None, param_dim=None, model_name=None):
-        """
-        Read in XADDs corresponding to argmin solutions.
-        """
-        ns = {}
-        xadd_str = ''
-        dec_var = None
-
-        # Check existence of the file
-        import os.path as path
-        if not path.exists(fname):
-            raise FileNotFoundError("File {} does not exist, raising an error".format(fname))
-
-        with open(fname, 'r') as f:
-            for i, line in enumerate(f.readlines()):
-                line_split = line.split(':')
-                if i == 0:
-                    assert line_split[0].lower() == 'problem type', "Problem type should be specified (knapsack or spo)"
-                    assert line_split[1].strip().lower() in ('predict-then-optimize', 'knapsack', 'bilinear')
-
-                    self.set_problem(line_split[1].strip().lower())
-
-                elif i == 1:
-                    assert line_split[0].lower() == 'config file', "Path to the configuration file should be provided"
-                    json_file = fname.replace('_argmin.xadd', '.json')
-                    self.link_json_file(json_file)
-
-                elif i == 2:
-                    assert line_split[0].lower() == 'decision variables', "Decision variables should be specified in the file"
-                    dec_vars = sympy.symbols(line_split[1].strip().replace(',', ' '))
-                    dec_vars = list(sorted(dec_vars, key=lambda x: (float(str(x).split("_")[0][1:]), float(str(x).split("_")[1]))
-                                            if len(str(x).split("_")) > 1 else float(str(x)[1:])))
-                    ns.update({str(v): v for v in dec_vars})
-                    self._min_var_set = set(dec_vars)
-                    dim_dec_vars = len(self._min_var_set)
-
-                elif i == 3:
-                    assert line_split[0].lower() == 'bounds', "Bound information should be provided"
-                    bound_dict = {ns[str(v)]: tuple(map(int, line_split[i+1].strip()[1:-1].split(','))) for i, v in enumerate(dec_vars)}
-                    self._var_to_bound.update(bound_dict)
-
-
-                elif i == 4 and line_split[0].lower() == 'feature dimension':
-
-                    # assert line_split[0].lower() == 'feature dimension', "Feature dimension should be specified"
-
-                    if feature_dim is None:
-                        feature_dim = tuple(int(i) for i in line_split[1].strip().strip('(').strip(')').split(',') if i)
-
-                    is_predopt = True if self._problem_type == 'predict-then-optimize' else False
-                    assert (len(feature_dim) == 1 and is_predopt) or (len(feature_dim) == 2 and not is_predopt)
-
-                    self.set_feature_dim(feature_dim)
-                    if param_dim is None:
-                        param_dim = (dim_dec_vars, feature_dim[0] + 1) if is_predopt else (feature_dim[1] + 1,)
-                    self.set_param_dim(param_dim)
-                    # ns = self.getPredictedCoeffs(locals=ns)
-
-                    self.update_name_space(ns)
-
-                elif len(line_split) > 1:
-                    if len(xadd_str) > 0 and dec_var is not None:
-                        self._var_to_anno[dec_var] = self.import_xadd(xadd_str=xadd_str, locals=ns)
-                        xadd_str = ''
-                    xadd_str = line_split[1].strip()
-                    dec_var = ns[line_split[0]]
-
-                elif len(line.strip()) != 0:
-                    xadd_str += line
-            if len(xadd_str) > 0 and dec_var is not None:
-                self._var_to_anno[dec_var] = self.import_xadd(xadd_str=xadd_str, locals=ns)
-        # Handle equality constraints if exist by looking at the configuration json file
-        try:
-            import json
-            with open(self._config_json_fname, "r") as json_file:
-                prob_instance = json.load(json_file)
-        except:
-            raise FileNotFoundError("Failed to open the configuration json file!")
-
-        eq_constr_dict, dec_vars = compute_rref_filter_eq_constr(prob_instance['eq-constr'], dec_vars, locals=ns)
-        dec_vars = [v for v in dec_vars if v not in eq_constr_dict]
-
-        return dec_vars, eq_constr_dict
-    
-    def var_count(self, node_id, count=None):
-        if count == None:
-            count = dict()
-        
-        node = self.get_exist_node(node_id)
-        expr = node.expr if node._is_leaf else self._id_to_expr.get(node.dec, None)
-
-        if not node._is_leaf:
-            self.var_count(node._low, count)
-            self.var_count(node._high, count)
-
-        for s in expr.free_symbols:
-            if str(s).startswith('x'):
-                count[s] = count.get(s, 0) + 1
-
-        return count
+        node_id = self.build_initial_xadd(xadd_as_list, to_canonical=to_canonical)
+        return node_id
 
 
 class NullDec:
@@ -1807,8 +1426,8 @@ class NullDec:
 
 
 class XADDLeafOperation(metaclass=abc.ABCMeta):
-    def __init__(self, context):
-        self._context = context
+    def __init__(self, context: XADD):
+        self._context: XADD = context
 
     @abc.abstractmethod
     def process_xadd_leaf(self, decisions, decision_values, leaf_val):
@@ -1816,23 +1435,32 @@ class XADDLeafOperation(metaclass=abc.ABCMeta):
 
 
 class DeltaFunctionSubstitution(XADDLeafOperation):
-    def __init__(self, sub_var, xadd_sub_at_leaves, context):
+    def __init__(
+            self,
+            sub_var: sympy.Symbol,
+            xadd_sub_at_leaves: int,
+            context: XADD
+    ):
         """
-        From the case statement of 'xadd_sub_at_leaves', all occurrences of sub_var will be replaced.
+        From the case statement of 'xadd_sub_at_leaves', 
+        all occurrences of sub_var will be replaced.
         """
         super().__init__(context)
-        self._leafSubs = {}
-        self._xadd_sub_at_leaves = xadd_sub_at_leaves
+        self._leafSubs: Dict[sympy.Symbol, Union[float, int, bool]] = {}
+        self._xadd_sub_at_leaves: int = xadd_sub_at_leaves
         self._subVar = sub_var
 
     def process_xadd_leaf(self, decisions, decision_values, leaf_val):
         self._leafSubs = {}
-        # If boolean variable, handle differently
-        if self._subVar in self._context._bool_var_set:
-            self._leafSubs[self._subVar] = True if leaf_val == 1 else False
-            return self._context.substitute_bool_vars(self._xadd_sub_at_leaves, self._leafSubs)
-        elif leaf_val == sympy.nan:
+        
+        if leaf_val == sympy.nan:
             return self._context.NAN
+        # If boolean variable, handle differently
+        elif self._subVar in self._context._bool_var_set:
+            self._leafSubs[self._subVar] = True if leaf_val == 1 or (isinstance(leaf_val, bool) and leaf_val)\
+                                                else False
+            return self._context.substitute_bool_vars(self._xadd_sub_at_leaves, self._leafSubs)
+        # Continuous variable
         else:
             self._leafSubs[self._subVar] = leaf_val
             ret = self._context.substitute(self._xadd_sub_at_leaves, self._leafSubs)
@@ -1841,28 +1469,37 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
 
 
 class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
-    def __init__(self, var_lst, is_max, bound_dict, context, annotate):
+    def __init__(
+            self, 
+            var_lst: List[sympy.Symbol],
+            is_max: bool,
+            bound_dict: Dict[sympy.Symbol, tuple],
+            context: XADD,
+            annotate: bool
+    ):
         super().__init__(context)
-        self._var_lst = var_lst
-        self._context._opt_var_lst = var_lst
-        self._is_max = is_max
-        self.bound_dict = bound_dict
-        self._running_result = -1
-        self._annotate = annotate
+        self._var_lst: List[sympy.Symbol] = var_lst
+        self._context._opt_var_lst: List[sympy.Symbol] = var_lst
+        self._is_max: bool = is_max
+        self.bound_dict: Dict[sympy.Symbol, tuple] = bound_dict
+        self._running_result: int = -1
+        self._annotate: bool = annotate
 
     @property
-    def _var(self):
+    def _var(self) -> sympy.Symbol:
         return self._var_lst[0]
 
     @property
-    def _lower_bound(self):
+    def _lower_bound(self) -> Union[float, int]:
         return self.bound_dict[self._var][0]
 
     @property
-    def _upper_bound(self):
+    def _upper_bound(self) -> Union[float, int]:
         return self.bound_dict[self._var][1]
 
-    def process_xadd_leaf(self, decisions, decision_values, leaf_val):
+    def process_xadd_leaf(
+            self, decisions: list, decision_values: list, leaf_val: sympy.Basic
+    ):
         """
 
         :param decisions:
@@ -1967,8 +1604,8 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                 min_max_eval = eval_lower
             else:
                 dec, is_reversed = self._context.get_dec_expr_index(dec_expr, create=True)
-                ind_true = self._context.get_internal_node(dec, self._context.ZERO_ig, self._context.ONE)
-                ind_false = self._context.get_internal_node(dec, self._context.ONE, self._context.ZERO_ig)
+                ind_true = self._context.get_internal_node(dec, self._context.ZERO, self._context.ONE)      # Note: need to use ZERO_ig for annotating purpose... 
+                ind_false = self._context.get_internal_node(dec, self._context.ONE, self._context.ZERO)     # but this is skipped in this branch
                 upper_half = self._context.apply(ind_true if not is_reversed else ind_false, eval_upper, 'prod')
                 lower_half = self._context.apply(ind_false if not is_reversed else ind_true, eval_lower, 'prod')
                 min_max_eval = self._context.apply(upper_half, lower_half, 'sum',
@@ -2020,35 +1657,32 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
         else:
             self._running_result = self._context.apply(self._running_result, min_max_eval, 'max' if self._is_max else 'min')
             self._running_result = self._context.reduce_lp(self._running_result)
-        #
-        # # Compare with the running result
-        # if self._running_result == -1:
-        #     self._running_result = min_max_eval
-        # else:
-        #     self._running_result = self._context.apply(self._running_result, min_max_eval, 'max' if self._is_max else 'min')
-        #
-        # # Reduce running result
-        # self._running_result = self._context.reduce_lp(self._running_result)
-
+        
         return self._context.get_leaf_node(leaf_val)
 
 
 class XADDLeafMinOrMax(XADDLeafOperation):
-    def __init__(self, var, is_max, bound_dict, context):
+    def __init__(
+            self, 
+            var: sympy.Symbol,
+            is_max: bool,
+            bound_dict: Dict[sympy.Symbol, tuple],
+            context: XADD
+    ):
         super().__init__(context)
-        self._var = var
-        self._context._opt_var = var
-        self._is_max = is_max
-        self._running_result = -1
+        self._var: sympy.Symbol = var
+        self._context._opt_var: sympy.Symbol = var
+        self._is_max: bool = is_max
+        self._running_result: int = -1
         if var in bound_dict:
-            self._lower_bound = bound_dict[var][0]
-            self._upper_bound = bound_dict[var][1]
+            self._lower_bound: Union[int, float, numbers.Number] = bound_dict[var][0]
+            self._upper_bound: Union[int, float, numbers.Number] = bound_dict[var][1]
         else:
             print("No domain bounds over {} are provided... using -oo and oo as lower and upper bounds.".format(var))
-            self._lower_bound = -oo
-            self._upper_bound = oo
+            self._lower_bound: Union[int, float, numbers.Number] = -oo
+            self._upper_bound: Union[int, float, numbers.Number] = oo
 
-    def process_xadd_leaf(self, decisions, decision_values, leaf_val):
+    def process_xadd_leaf(self, decisions: list, decision_values: list, leaf_val: sympy.Basic):
         """
 
         :param decisions:
@@ -2156,8 +1790,8 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                 min_max_eval = eval_lower
             else:
                 dec, is_reversed = self._context.get_dec_expr_index(dec_expr, create=True)
-                ind_true = self._context.get_internal_node(dec, self._context.ZERO_ig, self._context.ONE)
-                ind_false = self._context.get_internal_node(dec, self._context.ONE, self._context.ZERO_ig)
+                ind_true = self._context.get_internal_node(dec, self._context.ZERO, self._context.ONE)      # Note: need to use ZERO_ig for annotating purpose... 
+                ind_false = self._context.get_internal_node(dec, self._context.ONE, self._context.ZERO)     # but this is skipped in this branch
                 upper_half = self._context.apply(ind_true if not is_reversed else ind_false, eval_upper, 'prod')
                 lower_half = self._context.apply(ind_false if not is_reversed else ind_true, eval_lower, 'prod')
                 min_max_eval = self._context.apply(upper_half, lower_half, 'sum',
