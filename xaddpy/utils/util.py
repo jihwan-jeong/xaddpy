@@ -2,6 +2,7 @@ import argparse
 from sympy import sympify, collect
 from sympy.solvers import solveset
 import sympy.core.relational as relational
+from sympy.logic.boolalg import Boolean
 from sympy.matrices import Matrix
 import sympy
 from xaddpy.utils.global_vars import REL_TYPE, REL_REVERSED
@@ -273,3 +274,7 @@ def solve_lp_from_lp_xadd(context, lp, eq_constr):
 
 def get_date_time():
     return datetime.now().strftime("%m-%d-%Y_%H-%M-%S-%f")
+
+
+def check_sympy_boolean(expr: sympy.Basic):
+    return isinstance(expr, Boolean)
