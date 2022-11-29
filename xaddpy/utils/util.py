@@ -1,17 +1,22 @@
-import argparse
+from typing import Union, Dict, Optional, List, Tuple
+
 from sympy import sympify, collect
 from sympy.solvers import solveset
 import sympy.core.relational as relational
 from sympy.logic.boolalg import Boolean
 from sympy.matrices import Matrix
 import sympy
-from xaddpy.utils.global_vars import REL_TYPE, REL_REVERSED
+
 import pickle
 import numpy as np
 from datetime import datetime
-import os
-import os.path as path
-from gurobipy import GRB
+
+try:
+    from gurobipy import GRB
+except:
+    pass
+
+from xaddpy.utils.global_vars import REL_TYPE, REL_REVERSED
 
 typeConverter = {sympy.Integer: int, sympy.Float: float, sympy.core.numbers.Zero: int, sympy.core.numbers.NegativeOne: int,
                  sympy.core.numbers.One: int, sympy.core.numbers.Rational: float, sympy.core.numbers.Half: float,
@@ -278,3 +283,26 @@ def get_date_time():
 
 def check_sympy_boolean(expr: sympy.Basic):
     return isinstance(expr, Boolean)
+
+
+def sample_rvs(
+        rvs: List[sympy.Symbol], 
+        rv_type: List[str],
+        params: List[Tuple],
+        rng: np.random.Generator,
+        expectation: bool = False
+) -> Dict[sympy.Symbol, float]:
+    assert len(rvs) == len(rv_type), "Length mismatch"
+    res = {}
+    for rv, type, param in zip(rvs, rv_type, params):
+        if type == 'UNIFORM':
+            assert len(param) == 2 and param[0] <= param[1]
+            low, high = param
+            res[rv] = rng.uniform(low, high) if not expectation else (low + high) / 2
+        elif type == 'NORMAL':
+            assert len(param) == 2 and param[1] >= 0
+            mu, sigma = param
+            res[rv] = rng.normal(mu, sigma) if not expectation else mu
+        else:
+            raise NotImplementedError
+    return res

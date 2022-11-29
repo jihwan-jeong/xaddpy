@@ -10,8 +10,10 @@ from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 from xaddpy.xadd.reduce_lp import ReduceLPContext
 import abc
 from tqdm import tqdm
-from xaddpy.utils.global_vars import REL_TYPE, OP_TYPE, UNARY_OP, RELATIONAL_OPERATOR
-from xaddpy.utils.util import check_sympy_boolean
+from xaddpy.utils.global_vars import (
+    REL_TYPE, OP_TYPE, UNARY_OP, RELATIONAL_OPERATOR, ACCEPTED_RV_TYPES
+)
+from xaddpy.utils.util import check_sympy_boolean, sample_rvs
 from xaddpy.xadd.xadd_parse_utils import parse_xadd_grammar
 from xaddpy.utils.logger import logger
 
@@ -48,9 +50,14 @@ class XADD:
         self._id_to_cvar = {}
         self._bvar_to_id = {}
         self._id_to_bvar = {}
+        self._rv_to_id = {}
+        self._id_to_rv = {}
+        self._str_var_to_var = {}
         self._cont_var_set = set()
         self._bool_var_set = set()
-        self._str_var_to_var = {}
+        self._random_var_set = set()
+        self._rv_to_params = {}
+        self._rv_to_type = {}
 
         self._sympy_to_gurobi = {}
         self._opt_var = None
@@ -66,8 +73,8 @@ class XADD:
         self._temp_ub_lb_cache = set()
 
         # Decision expression maintenance
-        self._expr_to_id = {}
-        self._id_to_expr = {}
+        self._expr_to_id: Dict[sympy.Basic, int] = {}
+        self._id_to_expr: Dict[int, sympy.Basic] = {}
 
         # XADD node maintenance
         self._id_to_node: Dict[int, Node] = {}
@@ -121,6 +128,19 @@ class XADD:
     def set_variable_ordering_func(self, func: Callable):
         XADD._func_var_index = func
     
+    def add_random_var(self, var: sympy.Symbol, **kwargs):
+        if not var in self._random_var_set:
+            assert kwargs.get('params') is not None
+            assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
+            num_existing_rv = len(self._random_var_set)
+            self._random_var_set.add(var)
+            self._str_var_to_var[str(var)] = var
+            self._rv_to_id[var] = num_existing_rv
+            self._id_to_rv[num_existing_rv] = var
+            
+            self._rv_to_params[var] = kwargs['params']
+            self._rv_to_type[var] = kwargs['type']
+
     def add_continuous_var(self, var: sympy.Symbol):
         if not var in self._cont_var_set:
             num_existing_cvar = len(self._cont_var_set)
@@ -162,26 +182,26 @@ class XADD:
     def update_name_space(self, ns):
         self._name_space = ns
 
-    def convert_func_to_xadd(self, term):
+    def convert_func_to_xadd(self, term, **kwargs):
         args = term.as_two_terms()
-        xadd1 = self.convert_to_xadd(args[0])
-        xadd2 = self.convert_to_xadd(args[1])
+        xadd1 = self.convert_to_xadd(args[0], **kwargs)
+        xadd2 = self.convert_to_xadd(args[1], **kwargs)
         op = OP_TYPE[type(term)]
         return self.apply(xadd1, xadd2, op)
 
-    def convert_to_xadd(self, term: sympy.Basic):
+    def convert_to_xadd(self, term: sympy.Basic, **kwargs):
         if isinstance(term, sympy.Symbol) or \
             isinstance(term, numbers.Number) or \
                 isinstance(term, boolalg.BooleanAtom):
             if term._assumptions.get('bool', False):
-                dec, is_reversed = self.get_dec_expr_index(term, create=True)
+                dec, is_reversed = self.get_dec_expr_index(term, create=True, **kwargs)
                 low, high = self.FALSE, self.TRUE
                 if is_reversed:
                     low, high = high, low
                 return self.get_internal_node(dec, low, high)
-            return self.get_leaf_node(term)
+            return self.get_leaf_node(term, **kwargs)
         else:
-            return self.convert_func_to_xadd(term)
+            return self.convert_func_to_xadd(term, **kwargs)
 
     def build_initial_xadd(self, xadd_as_list: List, to_canonical=True):
         """
@@ -1190,11 +1210,26 @@ class XADD:
         expr, annotation = node.expr, node._annotation
         return self.get_leaf_node(expr, annotation)
 
-    def get_leaf_node(self, expr: sympy.Basic, annotation: Optional[int] = None) -> int:
-        """
-        :param expr:            (sympy.Basic) symbolic expression, not id
-        :param annotation:      (int) id of annotation XADD
-        :return:
+    def get_leaf_node(
+            self, expr: sympy.Basic, annotation: Optional[int] = None, **kwargs
+    ) -> int:
+        """Returns the ID of the leaf node with given SymPy expression and annotation.
+
+        Note that if a new random variable is added within this method,
+        kwargs should have the necessary parameters to specify the random variable.
+        
+        For example, for a uniform random variable, we need
+            {'params': [lb, ub]} where lb and ub are the lower and upper bounds of the uniform 
+            distribution, respectively.
+        
+        If this information was not provided, this method will result in an assertion error.
+        
+        Args:
+            expr (sympy.Basic): The SymPy expression associated with the leaf node.
+            annotation (Optional[int], optional): The node ID of the annotation.
+        
+        Returns:
+            int: _description_
         """
         self._temp_term_node.set(expr, annotation)
         node_id = self._node_to_id.get(self._temp_term_node, None)
@@ -1214,6 +1249,10 @@ class XADD:
                     self.add_boolean_var(v)
                 else:
                     self.add_continuous_var(v)
+                if v._assumptions.get('random', False):
+                    assert kwargs.get('params') is not None
+                    assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
+                    self.add_random_var(v, **kwargs)
         return node_id
 
     def get_dec_node(
@@ -1292,13 +1331,27 @@ class XADD:
         return expr, is_reversed
 
     def get_dec_expr_index(
-            self, expr: sympy.Basic, create: bool, canon: bool = False
+            self, expr: sympy.Basic, create: bool, canon: bool = False, **kwargs
     ) -> Tuple[Union[boolalg.BooleanAtom, int], bool]:
-        """
-        Given a symbolic expression 'expr', return the index of the expression in XADD._id_to_expr.
-        :param expr:            (sympy.Basic)
-        :param create:          (bool)
-        :return:                (int)
+        """Given a symbolic expression 'expr', return the index of the expression in XADD._id_to_expr.
+        
+        Note that if a new random variable is included in the expression,
+        kwargs should have the necessary parameters to specify the random variable.
+        
+        For example, for a uniform random variable, we need
+            {'params': [lb, ub]} where lb and ub are the lower and upper bounds of the uniform 
+            distribution, respectively.
+        
+        If this information was not provided, this method will result in an assertion error.
+        
+        Args:
+            expr (sympy.Basic): The expression to be used as a decision. This can be a relational
+                expression or just a boolean variable.
+            create (bool): Whether to assign a new ID for the given expression.
+            canon (bool, optional): Deprecated... TODO: check whether this can safely removed.
+
+        Returns:
+            Tuple[Union[boolalg.BooleanAtom, int], bool]: _description_
         """
         is_reversed = False
         if not canon:
@@ -1314,19 +1367,24 @@ class XADD:
             return index, is_reversed
         # If nothing's found, create one and store
         else:
-            vars_in_expr = expr.free_symbols.copy()
+            
             index = XADD._func_var_index(self, expr)
             self._expr_to_id[expr] = index
             self._id_to_expr[index] = expr
 
             # Add in all new variables
             vars_in_expr = expr.free_symbols.copy()
-            diff_vars = vars_in_expr.difference(self._cont_var_set).difference(self._bool_var_set)
+            diff_vars = vars_in_expr.difference(self._cont_var_set).\
+                difference(self._bool_var_set).difference(self._random_var_set)
             for v in diff_vars:
                 if v._assumptions.get('bool', False):
                     self.add_boolean_var(v)
                 else:
                     self.add_continuous_var(v)
+                if v._assumptions.get('random', False):
+                    assert kwargs.get('params') is not None
+                    assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
+                    self.add_random_var(v, **kwargs)
         return index, is_reversed
 
     def get_exist_node(self, node_id: int) -> Node:
@@ -1375,18 +1433,52 @@ class XADD:
             use_expectation: bool = False, 
             rng: np.random.Generator = None
     ) -> int:
+        """Samples all random variables existing in the given node and return the
+        ID of the reduced node with all random values instantiated 
+
+        Args:
+            node_id (int): The XADD node
+            use_expectation (bool, optional): Whether to use the expected value instead of sampling
+            rng (np.random.Generator, optional): The random number generator to use
+
+        Returns:
+            int: The ID of the reduce node after sampling
+        """
         if rng is None:
             rng = np.random.default_rng()
         
         node = self.get_exist_node(node_id)
 
         if node.is_leaf():
-            return
+            node = cast(XADDTNode, node)
+            expr = node.expr
+            rvs = [v for v in expr.free_symbols if v in self._random_var_set]
+            if len(rvs) == 0:
+                return node_id
+            types = [self._rv_to_type[rv] for rv in rvs]
+            params = [self._rv_to_params[rv] for rv in rvs]
+            samples = sample_rvs(rvs, types, params, rng, use_expectation)
+            expr = expr.xreplace(samples)
+            return self.get_leaf_node(expr, annotation=node._annotation)
         
-        reduce_cache_key = ()
-        ret = self._reduce_cache.get(reduce_cache_key, None)
-        if ret is not None:
-            pass
+        # Handle an internal node
+        node = cast(XADDINode, node)
+        low = self.reduce_sample(node.low, use_expectation, rng)
+        high = self.reduce_sample(node.high, use_expectation, rng)
+
+        dec = node.dec
+        dec_expr = self._id_to_expr[dec]
+        rvs = [v for v in dec_expr.free_symbols if v in self._random_var_set]
+        if len(rvs) != 0:
+            types = [self._rv_to_type[rv] for rv in rvs]
+            params = [self._rv_to_params[rv] for rv in rvs]
+            samples = sample_rvs(rvs, types, params, rng, use_expectation)
+            dec_expr = dec_expr.xreplace(samples)
+            dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
+            if is_reversed:
+                low, high = high, low
+        
+        return self.get_internal_node(dec, low, high)
 
     def reduce_process_xadd_leaf(
             self, 
