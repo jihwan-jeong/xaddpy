@@ -1,6 +1,5 @@
 import sympy.core.relational as relational
 import sympy
-from gurobipy import *
 from sympy.codegen.rewriting import optims_c99, optimize
 
 
@@ -16,7 +15,6 @@ REL_TYPE = {relational.LessThan: '<=', relational.StrictLessThan: '<',
 RELATIONAL_OPERATOR = {val: key for key, val in REL_TYPE.items()}
 REL_REVERSED = {'>': '<', '<': '>', '>=': '<=', '<=': '>='}
 REL_NEGATED = {'>': '<=', '<': '>=', '>=': '<', '<=': '>'}
-REL_REVERSED_GUROBI = {GRB.GREATER_EQUAL: GRB.LESS_EQUAL, GRB.LESS_EQUAL: GRB.GREATER_EQUAL}
 OP_TYPE = {sympy.core.Mul: 'prod', sympy.core.Add: 'sum'}
 UNARY_OP = {
     'sin': sympy.sin, 'cos': sympy.cos, 'tan': sympy.tan, 'exp': sympy.exp,

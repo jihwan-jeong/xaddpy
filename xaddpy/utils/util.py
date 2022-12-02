@@ -21,9 +21,6 @@ from xaddpy.utils.global_vars import REL_TYPE, REL_REVERSED
 typeConverter = {sympy.Integer: int, sympy.Float: float, sympy.core.numbers.Zero: int, sympy.core.numbers.NegativeOne: int,
                  sympy.core.numbers.One: int, sympy.core.numbers.Rational: float, sympy.core.numbers.Half: float,
                  sympy.core.numbers.Infinity: float, sympy.core.numbers.NegativeInfinity: float}
-relConverter = {relational.GreaterThan: GRB.GREATER_EQUAL, relational.StrictGreaterThan: GRB.GREATER_EQUAL,
-                relational.LessThan: GRB.LESS_EQUAL, relational.StrictLessThan: GRB.LESS_EQUAL,
-                relational.Eq: GRB.EQUAL}
 
 
 def reverse_expr(expr):
@@ -227,56 +224,6 @@ def get_bound(var, expr):
     return expr, ub
 
 
-def solve_lp_from_lp_xadd(context, lp, eq_constr):
-    import gurobipy as gp
-    from xaddpy.utils.milp_encoding import convert2GurobiExpr
-    from xaddpy.utils.gurobi_util import GurobiModel
-
-    model = GurobiModel('Validate')
-    model.setObjective(1, sense=gp.GRB.MINIMIZE)        # just check feasibility
-    sympy2gurobi = {}
-    ns = context._name_space
-    def compile_gurobi_model(node_id):
-        node = context.get_exist_node(node_id)
-
-        if node._is_leaf:
-            return
-        dec = node._dec
-        expr = context._id_to_expr[dec]
-        lhs, rel, rhs = expr.lhs, type(expr), expr.rhs
-        g_lhs = convert2GurobiExpr(lhs, model, context)
-
-        rel = REL_TYPE[rel]
-        if rel == '<=' or rel == '<':
-            model.addConstr(g_lhs <= 0)
-        else:
-            model.addConstr(g_lhs >= 0)
-
-        low = node._low
-        compile_gurobi_model(low)
-        high = node._high
-        compile_gurobi_model(high)
-
-    for lhs, rhs in eq_constr.items():
-        lhs = sympy.sympify(lhs, locals=ns)
-        rhs = sympy.sympify(rhs, locals=ns)
-        lhs = lhs - rhs
-        g_lhs = convert2GurobiExpr(lhs, model, context)
-        model.addConstr(g_lhs == 0)
-
-    compile_gurobi_model(lp)
-    print('Optimize model')
-    model.update()
-    model.optimize()
-    status = model.status
-    if status == gp.GRB.OPTIMAL:
-        print('Feasible')
-    elif status == gp.GRB.INFEASIBLE:
-        print('Infeasible')
-    else:
-        print('status: ', status)
-
-
 def get_date_time():
     return datetime.now().strftime("%m-%d-%Y_%H-%M-%S-%f")
 
@@ -306,3 +253,28 @@ def sample_rvs(
         else:
             raise NotImplementedError
     return res
+
+
+def check_expr_linear(
+        expr: sympy.Basic,
+) -> bool:
+    """Checks whether the given SymPy expression is linear or not
+    
+    As long as there exists a term that is not linear in any variables (including bilinear),
+    the function will return False. Otherwise, this will return True.
+    
+    Args:
+        expr (sympy.Basic): The expression to check linearity on
+
+    Returns:
+        bool: True if linear; False otherwise
+    """
+    if isinstance(expr, relational.Rel):
+        expr = expr.lhs
+    var_set = expr.free_symbols
+    for v in var_set:
+        try:
+            diff = sympy.diff(expr, v)
+            return v not in diff.free_symbols
+        except:
+            return False
