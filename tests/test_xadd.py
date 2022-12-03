@@ -1,4 +1,3 @@
-from xaddpy.xadd import xadd_parse_utils
 from xaddpy.xadd.xadd import XADD
 import sympy as sp
 
@@ -35,7 +34,7 @@ def test_xadd():
     print(f"Node 2:\n{context.get_exist_node(node2)}")
 
     # Examples of some basic operations between the two XADDs
-    node_sum = context.apply(node1, node2, op='sum')
+    node_sum = context.apply(node1, node2, op='add')
     node_prod = context.apply(node1, node2, op='prod')
     node_case_min = context.apply(node1, node2, op='min')
     node_case_max = context.apply(node1, node2, op='max')
@@ -50,4 +49,3 @@ def test_xadd():
 
 if __name__ == "__main__":
     test_xadd()
-

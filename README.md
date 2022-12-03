@@ -11,11 +11,13 @@ Note that the implementation for [EMSPO](https://proceedings.mlr.press/v162/jeon
 #### Load your Python virtual environment then type the following commands for package installation
 
 ```shell
-pip install gurobipy        # Should your application use linear conditional expressions
-pip install tqdm sympy==1.6.2 numpy matplotlib scipy psutil
+pip install sympy numpy psutil
+
+# Optional: if you want to use the 'reduce_lp' method that prunes out 
+# unreachable partitions using LP solvers
+pip install pulp
+pip install gurobipy    # If you have a license
 
 # Move to the current directory and install xaddpy as a Python package
 pip install -e .
 ```
-
-Note: our implementation relies on the specific version (1.6.2) of SymPy. Make sure you install the right version. Also, you might need Gurobi license to execute the code.

@@ -9,7 +9,6 @@ import xaddpy.utils.util
 from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 from xaddpy.xadd.reduce_lp import ReduceLPContext
 import abc
-from tqdm import tqdm
 from xaddpy.utils.global_vars import (
     REL_TYPE, OP_TYPE, UNARY_OP, RELATIONAL_OPERATOR, ACCEPTED_RV_TYPES
 )
