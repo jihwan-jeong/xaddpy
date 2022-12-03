@@ -1,11 +1,18 @@
-import gurobipy
+try:
+    import gurobipy
+    LP_BACKEND = 'gurobi'
+except:
+    LP_BACKEND = 'pulp'
+
+import pulp as pl
+from typing import Optional, cast
 import sympy as sp
 import sympy.core.relational as relational
-from gurobipy import *
+
 from xaddpy.utils.global_vars import REL_TYPE, REL_NEGATED
-from xaddpy.utils.milp_encoding import convert2GurobiExpr
 from xaddpy.utils.logger import logger
-from xaddpy.utils.gurobi_util import Model
+from xaddpy.utils.lp_util import Model, convert_to_pulp_expr
+from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 import psutil
 
 
@@ -19,8 +26,8 @@ class ReduceLPContext:
         :param xadd:
         """
         self.LPContext = context
-        self.set_to_implications = {}
-        self.set_to_nonimplications = {}
+        self.set_to_implied_set = {}
+        self.set_to_nonimplied_set = {}
         self.local_reduce_lp = None
         self.kwargs = kwargs
 
@@ -53,116 +60,122 @@ class ReduceLPContext:
         _hmImplications.clear();
         _hmNonImplications.clear();
         """
-        self.set_to_implications.clear()
-        self.set_to_nonimplications.clear()
+        self.set_to_implied_set.clear()
+        self.set_to_nonimplied_set.clear()
         
 
 class LocalReduceLP:
-    def __init__(self, context, reduce_lp_context, **kwargs):
+    def __init__(self, context, reduce_lp_context: ReduceLPContext, **kwargs):
         """
         :param xadd:            (XADD)
         :param reduce_lp_context: (ReduceLPContext)
         """
         # super().__init__(localRoot, xadd)
         self._context = context
+        self._expr_to_linear_check = self._context._expr_to_linear_check
+        self._expr_id_to_linear_check = self._context._expr_id_to_linear_check
         self.reduce_lp_context = reduce_lp_context
         self.lp = None
         self.verbose = kwargs.get('verbose', False)
 
     def flush_caches(self):
-        self.lp._lhs_expr_to_gurobi.clear()
-        self.lp._sympy_to_gurobi.clear()
+        self.lp._lhs_expr_to_pulp.clear()
+        self.lp._sympy_to_pulp.clear()
 
-    def reduce_lp_v2(self, node_id, test_dec, redundancy):
-        """
-        :param node_id:             (int)
-        :param test_dec:            (set)
-        :param redundancy:          (bool)
-        :return:
+    def reduce_lp_v2(self, node_id: int, test_dec: set, redundancy: bool) -> int:
+        """Performs reduce_lp method on the given node and returns the (potentially) reduced node ID
+
+        Args:
+            node_id (int): The ID of the node to which 'reduce_lp' is applied
+            test_dec (set): The set con
+            redundancy (bool): _description_
+
+        Returns:
+            _type_: _description_
         """
         avail_mem = psutil.virtual_memory().available * 100 / psutil.virtual_memory().total
         if avail_mem < 10:
             logger.info('freeing up cache of reduce_lp')
             self.reduce_lp_context.flush_caches()
 
-        node = self.context.get_exist_node(node_id)
+        node: Node = self.get_exist_node(node_id)
 
         # A leaf node should be reduced (and cannot be restricted) by default if hashing and equality testing
-        # are working in getTNode
-        if node._is_leaf:
+        # are working in get_leaf_node
+        if node.is_leaf():
             return node_id
-
-        # boolean variables are independent, no redundancy or infeasibility possible
-        dec_expr = self.context._id_to_expr[node.dec]
-        if not isinstance(dec_expr, relational.Rel):
-            assert isinstance(dec_expr, sp.Symbol)
-            low = self.reduce_lp_v2(node._low, test_dec, redundancy)
-            high = self.reduce_lp_v2(node._high, test_dec, redundancy)
-            return self.context.get_internal_node(node.dec, low, high)
+        
+        node = cast(XADDINode, node)
+        dec_id = node.dec
+        
+        # Skip non-linear expressions (any higher order terms including bilinear)
+        if not self._expr_id_to_linear_check[dec_id]:
+            low = self.reduce_lp_v2(node.low, test_dec, redundancy)
+            high = self.reduce_lp_v2(node.high, test_dec, redundancy)
+            return self.get_internal_node(dec_id, low, high)
         
         # Full branch implication test
-        # If `node.dec` is implied by `test_dec`, then replace `node` with `node._high`
+        # If `node.dec` is implied by `test_dec`, then replace `node` with `node.high`
         if self.is_test_implied(test_dec, node.dec):
-            return self.reduce_lp_v2(node._high, test_dec, redundancy)
-        # If the negation of `node.dec` is implied by `test_dec`, then replace `node` with `node._low`
+            return self.reduce_lp_v2(node.high, test_dec, redundancy)
+        # If the negation of `node.dec` is implied by `test_dec`, then replace `node` with `node.low`
         elif self.is_test_implied(test_dec, -1 * node.dec):
-            return self.reduce_lp_v2(node._low, test_dec, redundancy)
+            return self.reduce_lp_v2(node.low, test_dec, redundancy)
 
         # Make subtree reduced before redundancy check
         test_dec.add(-1 * node.dec)
-        low = self.reduce_lp_v2(node._low, test_dec, redundancy)
+        low = self.reduce_lp_v2(node.low, test_dec, redundancy)
         try:
             test_dec.remove(-1 * node.dec)
-        except KeyError as ke:
-            logger.error(ke)
-            pass
+        except KeyError as e:
+            logger.error(str(e))
+            logger.info("It is likely that the node is not canonical")
+            exit(1)
 
         test_dec.add(node.dec)
-        high = self.reduce_lp_v2(node._high, test_dec, redundancy)
+        high = self.reduce_lp_v2(node.high, test_dec, redundancy)
         test_dec.remove(node.dec)
 
         # After reducing subtrees, check if this node became redundant
         if redundancy:
             # 1) check if true branch is implied in the low branch if current decision is true
             test_dec.add(node.dec)
-            lowReplace = self.is_result_implied(test_dec, low, high)
+            low_replace = self.is_result_implied(test_dec, low, high)
             test_dec.remove(node.dec)
 
-            if lowReplace: return low
+            if low_replace: return low
 
             # 2) check if false branch is implied in the true branch if current decision is false
             test_dec.add(-node.dec)
-            highReplace = self.is_result_implied(test_dec, high, low)
+            high_replace = self.is_result_implied(test_dec, high, low)
             test_dec.remove(-node.dec)
 
-            if highReplace: return high
+            if high_replace: return high
 
         # Standard reduce: getINode will handle the case of low == high
-        return self._context.get_internal_node(node.dec, low, high)
+        return self.get_internal_node(node.dec, low, high)
 
-    def reduce_lp(self, node_id, redundancy):
+    def reduce_lp(self, node_id: int, redundancy: bool) -> int:
         test_dec = set()
         node_id = self.reduce_lp_v2(node_id, test_dec, redundancy)
         return node_id
 
-    def is_test_implied(self, test_dec, dec):
-        """
+    def is_test_implied(self, test_dec: set, dec: int) -> bool:
+        """Checks whether the decision associated with 'dec' is implied by the 
+        decisions included in 'test_dec'
 
-        :param test_dec:    (set)
-        :param dec:         (int)
-        :return:
-        """
-        # When 'dec' is not Rel expression, simply return False
-        if not isinstance(self.context._id_to_expr.get(abs(dec)), relational.Rel):
-            logger.warning(f"Warning: This case is not expected! (is_test_implied) dec: {dec} "
-                           f"expr_dec: {self.context._id_to_expr[abs(dec)]}")
-            return False
+        Args:
+            test_dec (set): The set of decisions
+            dec (int): The ID of the decision that we want to test
 
-        impliedSet = self.reduce_lp_context.set_to_implications.get(frozenset(test_dec.copy()), None)
-        if impliedSet is not None and dec in impliedSet:
+        Returns:
+            bool: True if 'dec' is implied by 'test_dec' set; False otherwise
+        """
+        implied_set = self.reduce_lp_context.set_to_implied_set.get(frozenset(test_dec.copy()), None)
+        if implied_set is not None and dec in implied_set:
             # When dec can easily be checked as implied (using impliedSet)
             return True
-        non_implied_set = self.reduce_lp_context.set_to_nonimplications.get(frozenset(test_dec.copy()), None)
+        non_implied_set = self.reduce_lp_context.set_to_nonimplied_set.get(frozenset(test_dec.copy()), None)
         if non_implied_set is not None and dec in non_implied_set:
             return False
 
@@ -170,116 +183,97 @@ class LocalReduceLP:
         implied = self.is_infeasible(test_dec)
         test_dec.remove(-dec)
         if implied:
-            if impliedSet is None:
-                impliedSet = set()
-                self.reduce_lp_context.set_to_implications[frozenset(test_dec.copy())] = impliedSet
-            impliedSet.add(dec)
+            if implied_set is None:
+                implied_set = set()
+                self.reduce_lp_context.set_to_implied_set[frozenset(test_dec.copy())] = implied_set
+            implied_set.add(dec)
         else:
             if non_implied_set is None:
                 non_implied_set = set()
-                self.reduce_lp_context.set_to_nonimplications[frozenset(test_dec.copy())] = non_implied_set
+                self.reduce_lp_context.set_to_nonimplied_set[frozenset(test_dec.copy())] = non_implied_set
             non_implied_set.add(dec)
         return implied
 
-    def is_infeasible(self, test_dec):
-        """
-        Check whether a set of decisions contained in test_dec is infeasible.
-        :param test_dec:        (set)
-        :return:                (bool)
+    def is_infeasible(self, test_dec: set) -> bool:
+        """Checks whether a set of decisions contained in 'test_dec' is infeasible.
+
+        Args:
+            test_dec (set): The set contatining IDs of decisions
+
+        Returns:
+            bool: True if infeasible; False otherwise
         """
         infeasible = False
 
         # Based on decisions, solve an LP with those constraints, and determine if feasible or infeasible
-        # Note: some bilinear constraints can show up, but they should be infeasible.
-        # In order to check that, we use try; except.
         self.lp = LP(self.context) if not self.lp else self.lp
         lp = self.lp
 
-
         # Remove all previously set constraints and reset the objective
-        lp.clear_all_constraints()
+        lp.reset()
         lp.set_objective(1)
-        lp.update()
 
         # Add constraints as given by decisions in test_dec
         for dec in test_dec:
             lp.add_decision(dec)
-        lp.update()
 
         # Optimize the model to see if infeasible
-        if len(lp.model.getQConstrs()) > 0:
-            lp.non_convex_on()
-            try:
-                status = lp.solve()
-                lp.non_convex_off()
-            except Exception as e:
-                logger.error(e)
-                exit(1)
+        try:
+            status = lp.solve()
+        except Exception as e:
+            logger.error(str(e))
+            exit(1)
 
-        else:
-            lp.non_convex_off()
-            try:
-                status = lp.solve()
-            except Exception as e:
-                logger.error(e)
-                exit(1)
-
-        # except gurobipy.GurobiError as e:
-        #     if self.verbose:
-        #         logger.info(f"Bilinear constraint detected.... Turning on the 'NonConvex' flag and resolve!")
-        #     lp.non_convex_on()
-        #     status = lp.solve()
-
-
-        if status == GRB.INFEASIBLE:
+        if status == pl.LpStatusInfeasible:
             infeasible = True
         if infeasible:
-            lp.model.remove(lp.model.getQConstrs())
             return infeasible
 
         ## Test 2: test slack
-        # lp2 = LP(self.context)
-        # Remove bilinear constraints right away if added
-        lp.model.remove(lp.model.getQConstrs())
-
         infeasible = lp.test_slack(test_dec)
         return infeasible
+    
+    def is_result_implied(self, test_dec: set, subtree: int, goal: int) -> bool:
+        """Checks whether 'goal' can be implied 
 
-    def is_result_implied(self, test_dec, subtree, goal):
-        """
+        Args:
+            test_dec (set): _description_
+            subtree (int): _description_
+            goal (int): _description_
 
-        :param test_dec:    (set)
-        :param subtree:     (int)
-        :param goal:        (int)
-        :return:
+        Returns:
+            bool: _description_
         """
         if subtree == goal:
             return True
-        subtree_node = self.context.get_exist_node(subtree)
-        goal_node = self.context.get_exist_node(goal)
+        subtree_node = self.get_exist_node(subtree)
+        goal_node = self.get_exist_node(goal)
 
-        if not subtree_node._is_leaf:
-            if not goal_node._is_leaf:
+        if not subtree_node.is_leaf():
+            if not goal_node.is_leaf():
+                subtree_node = cast(XADDINode, subtree_node)
+                goal_node = cast(XADDINode, goal_node)
+                
                 # use variable ordering to stop pointless searches
                 if subtree_node.dec >= goal_node.dec:
                     return False
 
             # If decisions down to the current node imply the negation of the `subtree_node.dec`:
             if self.is_test_implied(test_dec, -subtree_node.dec):
-                return self.is_result_implied(test_dec, subtree_node._low, goal)   # Then, check for the low branch
+                return self.is_result_implied(test_dec, subtree_node.low, goal)   # Then, check for the low branch
             if self.is_test_implied(test_dec, subtree_node.dec):   # Or they imply `subtree_node.dec`,
-                return self.is_result_implied(test_dec, subtree_node._high, goal)  # Then, check for the high branch
+                return self.is_result_implied(test_dec, subtree_node.high, goal)  # Then, check for the high branch
 
             # Now, recurse starting from the low branch
             test_dec.add(-subtree_node.dec)
-            implied_in_low = self.is_result_implied(test_dec, subtree_node._low, goal)
+            implied_in_low = self.is_result_implied(test_dec, subtree_node.low, goal)
             test_dec.remove(-subtree_node.dec)
 
             # if one branch failed, no need to test the other one
             if not implied_in_low: return False
 
             test_dec.add(subtree_node.dec)
-            implied_in_high = self.is_result_implied(test_dec, subtree_node._high, goal)
+            implied_in_high = self.is_result_implied(test_dec, subtree_node.high, goal)
             test_dec.remove(subtree_node.dec)
 
             return implied_in_high
@@ -289,38 +283,49 @@ class LocalReduceLP:
     def context(self):
         return self._context
 
+    def get_internal_node(self, dec: int, low: int, high: int) -> int:
+        return self._context.get_internal_node(dec, low, high)
+    
+    def get_exist_node(self, node_id: int) -> Node:
+        return self.context.get_exist_node(node_id)    
+
+
 class LP:
     def __init__(self, context):
         self._context = context
-        self.model = Model(name='LPReduce')
-        self.model.setParam('OutputFlag', 0)
-        self.model.setObjective(1, sense=GRB.MAXIMIZE)      # Any objective suffices as we only check for feasibility
+        self.model = Model(
+            name='LPReduce',
+            backend=LP_BACKEND,
+            sense=pl.LpMaximize,
+            msg=False                   # Turn off printing
+        )
+        self.model.setObjective(1)      # Any objective suffices as we only check for feasibility
         self.model.setAttr('_var_to_bound', context._var_to_bound)
-        self._is_nonconvex = False
+
         # Variable management
         self._var_set = set()
-        self.model.set_sympy_to_gurobi_dict(self.context._sympy_to_gurobi)
-        self._sympy_to_gurobi = self.context._sympy_to_gurobi
-        self._lhs_expr_to_gurobi = {}
+        self.model.set_sympy_to_pulp_dict(self.context._sympy_to_pulp)
+        self._sympy_to_pulp = self.context._sympy_to_pulp
+        self._lhs_expr_to_pulp = {}
 
     @property
     def context(self):
         return self._context
 
-    def clear_all_constraints(self):
-        self.model.remove(self.model.getConstrs())
+    def reset(self):
+        self.model.reset()
 
-    def add_decision(self, dec):
+    def add_decision(self, dec: int) -> None:
         # Check if the constraint has already been added to the model
-        if len(self.model.getConstrs()) != 0:
-            if self.model.getConstrByName('dec({})'.format(dec)):
+        constraint = self.model.get_constraint_by_name(f'dec({dec})')
+        if constraint is not None:
                 return
         if dec > 0:
             self.add_constraint(dec, True)
         else:
             self.add_constraint(-dec, False)
 
-    def add_constraint(self, dec, is_true):
+    def add_constraint(self, dec: int, is_true: bool):
         """
         Given an integer id for decision expression (and whether it's true or false), add the expression to LP problem.
         1) Need to create Variable objects for each of sympy variables (if already created, retrieve from cache)
@@ -333,66 +338,45 @@ class LP:
         """
         dec_expr = self.context._id_to_expr[dec]
         dec = dec if is_true else -dec
-        lhs, rel, rhs = dec_expr.lhs, REL_TYPE[type(dec_expr)], dec_expr.rhs
-        if not is_true:
-            rel = REL_NEGATED[rel]
 
-        # dec_expr = self.convert_expr(dec_expr)       # Convert to optlang expression
-        assert rhs == 0, "RHS of a relational expression should always be 0 by construction!"
-        lhs_gurobi = self.convert_expr(lhs)                 # Convert lhs to gurobi expression (rhs=0)
+        # Handle relational conditionals
+        if isinstance(dec_expr, relational.Rel):
+            lhs, rel, rhs = dec_expr.lhs, REL_TYPE[type(dec_expr)], dec_expr.rhs
+            if not is_true:
+                rel = REL_NEGATED[rel]
+            
+            assert rhs == 0, "RHS of a relational expression should always be 0 by construction!"
+            lhs_pulp = self.convert_expr(lhs)                 # Convert lhs to pulp expression (rhs=0)
 
-        if rel == '>' or rel == '>=':
-            self.model.addConstr(lhs_gurobi >= 0, name=f'dec({dec})')
-        elif rel == '<' or rel == '<=':
-            self.model.addConstr(lhs_gurobi <= 0, name=f'dec({dec})')
-
-        # Skip expressions containing theta variables
-        if dec_expr is None:
-            return
-
-        # lhs, rhs, rel = dec_expr.lhs, dec_expr.rhs, REL_TYPE[type(dec_expr)]
-        # lhs, rhs, rel = dec_expr
-        # if not is_true: rel = REL_NEGATED[rel]
-        # if not is_true: rel = REL_REVERSED_GUROBI[rel]
-
-        # Create Constraint
-        # if rel == '<=' or rel == '<':
-        #     c = Constraint(lhs-rhs, ub=0)
-        # else:
-        #     c = Constraint(lhs-rhs, lb=0)
-
-        # Add Constraint
-        # self.lp.addConstr(c)
-        # self.model.addConstr(dec_expr, name='dec({})'.format(dec))
-
-    def update(self):
-        self.model.update()
-
-    def solve(self):
+            if rel == '>' or rel == '>=':
+                self.model.addConstr(lhs_pulp >= 0, name=f'dec({dec})')
+            elif rel == '<' or rel == '<=':
+                self.model.addConstr(lhs_pulp <= 0, name=f'dec({dec})')
+        
+        # Handle Boolean decisions
+        elif isinstance(dec_expr, sp.Symbol) and (dec_expr._assumptions.get('bool', False)):
+            bool_pulp = self.convert_expr(dec_expr)
+            if is_true:
+                self.model.addConstr(bool_pulp == 1, name=f'dec({dec})')
+            else:
+                self.model.addConstr(bool_pulp == 0, name=f'dec({dec})')
+        else:
+            raise NotImplementedError("Decision expression not supported")
+    
+    def solve(self) -> Optional[int]:
         """
         Solve the LP defined by all added constraints, variables and objective. We only care about if it's
         infeasible or feasible. So, return status.
         :return:        (str)
         """
         try:
-            self.model.optimize()
-            return self.model.status
-        except GurobiError as e:
+            status = self.model.solve()
+            return status
+        except Exception as e:
             raise e
 
     def set_objective(self, obj):
-        self.model.setObjective(obj, sense=GRB.MAXIMIZE)
-
-    def add_variable(self, var):
-        pass
-
-    def non_convex_on(self):
-        self._is_nonconvex = True
-        self.model.setParam('nonConvex', 2)
-
-    def non_convex_off(self):
-        self._is_nonconvex = False
-        self.model.setParam('nonConvex', 0)
+        self.model.setObjective(obj)
 
     def convert_expr(self, expr):
         """
@@ -401,16 +385,16 @@ class LP:
         :param expr:        (sympy.Basic)
         :return:
         """
-        if expr in self._lhs_expr_to_gurobi:
-            return self._lhs_expr_to_gurobi[expr]
+        if expr in self._lhs_expr_to_pulp:
+            return self._lhs_expr_to_pulp[expr]
         else:
-            gurobi_expr = convert2GurobiExpr(
+            pulp_expr = convert_to_pulp_expr(
                 expr,
-                g_model=self.model,
+                model=self.model,
                 incl_bound=True,
             )
-            self._lhs_expr_to_gurobi[expr] = gurobi_expr
-            return gurobi_expr
+            self._lhs_expr_to_pulp[expr] = pulp_expr
+            return pulp_expr
 
     def test_slack(self, test_dec):
         """
@@ -424,95 +408,62 @@ class LP:
         # Check if test_slack is turned off by context (this happens at the time of arg substitution)
         if not self.context._prune_equality:
             return infeasible
-
-        # Define a positive slack variable
-        if len(self.model.getVars()) != 0:
-            S = self.model.getVarByName('S')
-            if S is None:
-                S = self.model.addVar(lb=0, name='S')
-        else:
-            S = self.model.addVar(lb=0, name='S')
-
-        # obj = Objective(S, direction='max')         # objective is S
-        self.model.setObjective(S, sense=GRB.MAXIMIZE)
-
+        
         # Remove all pre-existing constraints
-        try:
-            self.model.remove(self.model.getConstrs())
-            # self.model._remove_constraints(self.model.constraints)
-        except RuntimeError as re:
-            logger.error(re)
-        except AttributeError as ae:
-            logger.error(ae)
-            pass
+        self.model.reset()
+
+        # Define a positive slack variable and set it as the objective for maximization
+        S = self.model.getVarByName('S')
+        if S is None:
+            S = self.model.addVar(lb=0, name='S')
+        self.model.setObjective(S)
 
         # Reset constraint for each decision in test_dec
-        constraints = []
+        # Note: for testing slack, we skip checking boolean variables
         for dec in test_dec:
             negated = True if dec < 0 else False
 
             dec_expr = self.context._id_to_expr[-dec] if negated else self.context._id_to_expr[dec]
-            lhs, rhs, rel = dec_expr.lhs, dec_expr.rhs, REL_TYPE[type(dec_expr)]
-            lhs_gurobi = self.convert_expr(lhs)
+            if isinstance(dec_expr, relational.Rel):
+                lhs, rel = dec_expr.lhs, REL_TYPE[type(dec_expr)]
+                lhs_pulp = self.convert_expr(lhs)
+                
+                if negated: rel = REL_NEGATED[rel]
 
-            if negated: rel = REL_NEGATED[rel]
-
-            # Create Constraint
-            if rel == '<=' or rel == '<':
-                # c = Constraint(lhs - rhs + S, ub=0)
-                self.model.addConstr(lhs_gurobi + S <= 0, name=f'dec({dec})')
-            else:
-                # c = Constraint(lhs - rhs - S, lb=0)
-                self.model.addConstr(lhs_gurobi - S >= 0, name=f'dec({dec})')
-            # constraints.append(c)
-        # self.model.add(constraints)
-
-        self.update()
+                # Create Constraint
+                if rel == '<=' or rel == '<':
+                    # c = Constraint(lhs - rhs + S, ub=0)
+                    self.model.addConstr(lhs_pulp + S <= 0, name=f'dec({dec})')
+                else:
+                    # c = Constraint(lhs - rhs - S, lb=0)
+                    self.model.addConstr(lhs_pulp - S >= 0, name=f'dec({dec})')
+        
+        if len(self.model.get_constraints()) == 0:
+            return infeasible
+        
         # Optimize the model to see if infeasible
-        if len(self.model.getQConstrs()) > 0:
-            self.non_convex_on()
-            try:
-                status = self.solve()
-                self.non_convex_off()
-            except Exception as e:
-                logger.error(e)
-                exit(1)
-
-        else:
-            self.non_convex_off()
-            try:
-                status = self.solve()
-            except Exception as e:
-                logger.error(e)
-                exit(1)
-
-        # try:
-        #     self.non_convex_off()
-        #     status = self.solve()
-        # except gurobipy.GurobiError as e:
-        #     logger.info(f"Bilinear constraint detected.... Turning on the 'NonConvex' flag and resolve!")
-        #     self.non_convex_on()
-        #     status = self.solve()
-        # except Exception as e:
-        #     logger.error(e)
-        #     exit(1)
+        try:
+            status = self.solve()
+        except Exception as e:
+            logger.error(e)
+            exit(1)
 
         # Due to dual reduction in presolve of Gurobi, INF_OR_UNBD status can be returned
         # Turn off the functionality and resolve
-        if status == GRB.INF_OR_UNBD:
+        # TODO: How to handle dualreductions for other solvers than Gurobi?
+        if status in (pl.LpStatusInfeasible, pl.LpStatusUnbounded, pl.LpStatusUndefined):
+            self.model.toggle_direct_solver_on()
             self.model.setParam('DualReductions', 0)
             status = self.solve()
             self.model.setParam('DualReductions', 1)
+            self.model.toggle_direct_solver_off()
 
-        opt_obj = self.model.objVal if status == GRB.OPTIMAL else 1e100
+        opt_obj = self.model.objVal if status == pl.LpStatusOptimal else 1e100
 
-        if status == GRB.INFEASIBLE:
+        if status == pl.LpStatusInfeasible:
             logger.warning("Infeasibility at test 2 should not have occurred!")
             infeasible = True
-        elif status != GRB.UNBOUNDED and opt_obj < 1e-4:
+        elif status != pl.LpStatusUnbounded and opt_obj < 1e-4:
             infeasible = True
-
-        # Remove bilinear constraints right away if there are (since these are not returned by getConstrByName)
-        self.model.remove(self.model.getQConstrs())
 
         return infeasible

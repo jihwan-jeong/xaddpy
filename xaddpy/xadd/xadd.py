@@ -13,7 +13,7 @@ from tqdm import tqdm
 from xaddpy.utils.global_vars import (
     REL_TYPE, OP_TYPE, UNARY_OP, RELATIONAL_OPERATOR, ACCEPTED_RV_TYPES
 )
-from xaddpy.utils.util import check_sympy_boolean, sample_rvs
+from xaddpy.utils.util import check_sympy_boolean, sample_rvs, check_expr_linear
 from xaddpy.xadd.xadd_parse_utils import parse_xadd_grammar
 from xaddpy.utils.logger import logger
 
@@ -59,7 +59,7 @@ class XADD:
         self._rv_to_params = {}
         self._rv_to_type = {}
 
-        self._sympy_to_gurobi = {}
+        self._sympy_to_pulp = {}
         self._opt_var = None
         self._opt_var_lst = None
         self._eliminated_var = []
@@ -75,6 +75,8 @@ class XADD:
         # Decision expression maintenance
         self._expr_to_id: Dict[sympy.Basic, int] = {}
         self._id_to_expr: Dict[int, sympy.Basic] = {}
+        self._expr_to_linear_check: Dict[sympy.Basic, bool] = {}
+        self._expr_id_to_linear_check: Dict[int, bool] = {}
 
         # XADD node maintenance
         self._id_to_node: Dict[int, Node] = {}
@@ -370,15 +372,15 @@ class XADD:
         return result
     
     def evaluate_decision(
-        self,
-        dec_expr: sympy.Basic,
-        bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
-        cont_assign: Dict[sympy.Symbol, Union[int, float]], 
+            self,
+            dec_expr: sympy.Basic,
+            bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
+            cont_assign: Dict[sympy.Symbol, Union[int, float]], 
     ) -> Union[bool, None]:
         if isinstance(dec_expr, boolalg.BooleanAtom):
             return bool(dec_expr)
         # if a decision expression is a single symbol, it should be a boolean decision
-        elif isinstance(dec_expr, sympy.Symbol):
+        elif dec_expr._assumptions.get('bool', False):
             return bool_assign.get(dec_expr)
         # Inequality decision
         elif isinstance(dec_expr, relational.Rel):
@@ -395,12 +397,12 @@ class XADD:
             return None
         
     def evaluate(
-        self, 
-        node_id: int, 
-        bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
-        cont_assign: Dict[sympy.Symbol, Union[int, float]],
-        primitive_type: bool = False,
-    ) -> Union[float, int, None]:
+            self, 
+            node_id: int, 
+            bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
+            cont_assign: Dict[sympy.Symbol, Union[int, float]],
+            primitive_type: bool = False,
+    ) -> Union[float, int, bool, None]:
         """
         Evaluates a given node by inserting boolean and real values into variables.
         """
@@ -428,7 +430,9 @@ class XADD:
             return
         
         # Return python primitive type
-        if primitive_type:
+        if primitive_type and isinstance(expr, boolalg.BooleanAtom):
+            return bool(expr)
+        elif primitive_type:
             return float(expr)
         
         # Otherwise, return sympy type
@@ -1298,10 +1302,17 @@ class XADD:
             return expr, is_reversed
 
         # Handle boolean expressions
-        if check_sympy_boolean(expr):
+        if not isinstance(expr, relational.Rel):
             if isinstance(expr, boolalg.Not):
                 expr = ~expr
                 is_reversed = True
+            if not expr._assumptions.get('bool', False):
+                print(f"Expression {expr} will be treated as Boolean")
+                expr._assumptions['bool'] = True
+                if expr in self._cont_var_set:
+                    self._cont_var_set.remove(expr)
+                if expr not in self._bool_var_set:
+                    self._bool_var_set.add(expr)
             return expr, is_reversed
         
         # Always make 'lhs - rhs <= 0' as canonical expression
@@ -1367,11 +1378,15 @@ class XADD:
             return index, is_reversed
         # If nothing's found, create one and store
         else:
-            
             index = XADD._func_var_index(self, expr)
             self._expr_to_id[expr] = index
             self._id_to_expr[index] = expr
-
+            
+            # Check whether the expression is at most linear in free variables
+            is_linear = check_expr_linear(expr)
+            self._expr_to_linear_check[expr] = is_linear
+            self._expr_id_to_linear_check[index] = is_linear
+            
             # Add in all new variables
             vars_in_expr = expr.free_symbols.copy()
             diff_vars = vars_in_expr.difference(self._cont_var_set).\
