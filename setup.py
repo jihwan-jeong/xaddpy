@@ -9,7 +9,7 @@ setup(
     name='xaddpy',
     packages=['xaddpy'],
     install_requires=['numpy', 'sympy', 'pulp'],
-    version='0.1.0',
+    version='0.1.1',
     license='MIT License',
     description='XADD package in Python',
     long_description=long_description,
@@ -18,5 +18,5 @@ setup(
     author_email='jiihwan.jeong@gmail.com',
     url='https://github.com/jihwan-jeong/xaddpy',
     keywords=["xadd", "xadd python", "symbolic diagram"],
-    download_url="https://github.com/jihwan-jeong/xaddpy/archive/refs/tags/0.1.0.tar.gz"
+    download_url="https://github.com/jihwan-jeong/xaddpy/archive/refs/tags/0.1.1.tar.gz"
 )
