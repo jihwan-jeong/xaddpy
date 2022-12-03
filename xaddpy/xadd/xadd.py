@@ -372,15 +372,15 @@ class XADD:
         return result
     
     def evaluate_decision(
-        self,
-        dec_expr: sympy.Basic,
-        bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
-        cont_assign: Dict[sympy.Symbol, Union[int, float]], 
+            self,
+            dec_expr: sympy.Basic,
+            bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
+            cont_assign: Dict[sympy.Symbol, Union[int, float]], 
     ) -> Union[bool, None]:
         if isinstance(dec_expr, boolalg.BooleanAtom):
             return bool(dec_expr)
         # if a decision expression is a single symbol, it should be a boolean decision
-        elif isinstance(dec_expr, sympy.Symbol):
+        elif dec_expr._assumptions.get('bool', False):
             return bool_assign.get(dec_expr)
         # Inequality decision
         elif isinstance(dec_expr, relational.Rel):
@@ -397,12 +397,12 @@ class XADD:
             return None
         
     def evaluate(
-        self, 
-        node_id: int, 
-        bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
-        cont_assign: Dict[sympy.Symbol, Union[int, float]],
-        primitive_type: bool = False,
-    ) -> Union[float, int, None]:
+            self, 
+            node_id: int, 
+            bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
+            cont_assign: Dict[sympy.Symbol, Union[int, float]],
+            primitive_type: bool = False,
+    ) -> Union[float, int, bool, None]:
         """
         Evaluates a given node by inserting boolean and real values into variables.
         """
@@ -430,7 +430,9 @@ class XADD:
             return
         
         # Return python primitive type
-        if primitive_type:
+        if primitive_type and isinstance(expr, boolalg.BooleanAtom):
+            return bool(expr)
+        elif primitive_type:
             return float(expr)
         
         # Otherwise, return sympy type
