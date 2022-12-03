@@ -13,6 +13,7 @@ setup(
     license='MIT License',
     description='XADD package in Python',
     long_description=long_description,
+    long_description_content_type="text/markdown",
     author='Jihwan Jeong',
     author_email='jiihwan.jeong@gmail.com',
     url='https://github.com/jihwan-jeong/xaddpy',
