@@ -11,13 +11,8 @@ Note that the implementation for [EMSPO](https://proceedings.mlr.press/v162/jeon
 #### Load your Python virtual environment then type the following commands for package installation
 
 ```shell
-pip install sympy numpy psutil
+pip install xaddpy
 
-# Optional: if you want to use the 'reduce_lp' method that prunes out 
-# unreachable partitions using LP solvers
-pip install pulp
+# Optional: if you want to use Gurobi for the 'reduce_lp' method that prunes out unreachable partitions using LP solvers
 pip install gurobipy    # If you have a license
-
-# Move to the current directory and install xaddpy as a Python package
-pip install -e .
 ```
