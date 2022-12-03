@@ -3,18 +3,21 @@ import sympy
 import sympy.core.numbers as numbers
 import sympy.core.relational as relational
 from sympy import oo, S
+import numpy as np
 
 import xaddpy.utils.util
 from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 from xaddpy.xadd.reduce_lp import ReduceLPContext
 import abc
 from tqdm import tqdm
-from xaddpy.utils.global_vars import REL_TYPE, OP_TYPE
-from xaddpy.utils.util import compute_rref_filter_eq_constr
+from xaddpy.utils.global_vars import (
+    REL_TYPE, OP_TYPE, UNARY_OP, RELATIONAL_OPERATOR, ACCEPTED_RV_TYPES
+)
+from xaddpy.utils.util import check_sympy_boolean, sample_rvs, check_expr_linear
 from xaddpy.xadd.xadd_parse_utils import parse_xadd_grammar
 from xaddpy.utils.logger import logger
 
-from typing import Dict, Tuple, Union, cast, List, Optional
+from typing import Callable, Dict, Tuple, Union, cast, List, Optional
 
 USE_APPLY_GET_INODE_CANON = False
 LARGE_INTEGER = 10000
@@ -45,11 +48,18 @@ class XADD:
         # XADD variable maintenance
         self._cvar_to_id = {}
         self._id_to_cvar = {}
-        self._var_set = set()
-        self._bool_var_set = set()
+        self._bvar_to_id = {}
+        self._id_to_bvar = {}
+        self._rv_to_id = {}
+        self._id_to_rv = {}
         self._str_var_to_var = {}
+        self._cont_var_set = set()
+        self._bool_var_set = set()
+        self._random_var_set = set()
+        self._rv_to_params = {}
+        self._rv_to_type = {}
 
-        self._sympy_to_gurobi = {}
+        self._sympy_to_pulp = {}
         self._opt_var = None
         self._opt_var_lst = None
         self._eliminated_var = []
@@ -63,8 +73,10 @@ class XADD:
         self._temp_ub_lb_cache = set()
 
         # Decision expression maintenance
-        self._expr_to_id = {}
-        self._id_to_expr = {}
+        self._expr_to_id: Dict[sympy.Basic, int] = {}
+        self._id_to_expr: Dict[int, sympy.Basic] = {}
+        self._expr_to_linear_check: Dict[sympy.Basic, bool] = {}
+        self._expr_id_to_linear_check: Dict[int, bool] = {}
 
         # XADD node maintenance
         self._id_to_node: Dict[int, Node] = {}
@@ -115,15 +127,49 @@ class XADD:
         # Other attributes
         self._args: dict = args
 
-    def set_variable_ordering_func(self, func):
+    def set_variable_ordering_func(self, func: Callable):
         XADD._func_var_index = func
     
+    def add_random_var(self, var: sympy.Symbol, **kwargs):
+        if not var in self._random_var_set:
+            assert kwargs.get('params') is not None
+            assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
+            num_existing_rv = len(self._random_var_set)
+            self._random_var_set.add(var)
+            self._str_var_to_var[str(var)] = var
+            self._rv_to_id[var] = num_existing_rv
+            self._id_to_rv[num_existing_rv] = var
+            
+            self._rv_to_params[var] = kwargs['params']
+            self._rv_to_type[var] = kwargs['type']
+
+    def add_continuous_var(self, var: sympy.Symbol):
+        if not var in self._cont_var_set:
+            num_existing_cvar = len(self._cont_var_set)
+            self._cont_var_set.add(var)
+            self._str_var_to_var[str(var)] = var
+            self._cvar_to_id[var] = num_existing_cvar
+            self._id_to_cvar[num_existing_cvar] = var
+
+    def add_boolean_var(self, var: sympy.Symbol):
+        if not var._assumptions.get('bool', False):
+            print(f"The type of boolean variable {var} is not correctly set..")
+            var._assumptions['bool'] = True
+        if var not in self._bool_var_set:
+            num_existing_bvar = len(self._bool_var_set)
+            self._bool_var_set.add(var)
+            self._str_var_to_var[str(var)] = var
+            self._bvar_to_id[var] = num_existing_bvar
+            self._id_to_bvar[num_existing_bvar] = var
+            
     def create_standard_nodes(self):
         """
         Create and store standard nodes and generate indices, which can be frequently used.
         """
         self.ZERO = self.get_leaf_node(sympy.S(0))
         self.ONE = self.get_leaf_node(sympy.S(1))
+        self.TRUE = self.get_leaf_node(sympy.true)
+        self.FALSE = self.get_leaf_node(sympy.false)
         self.oo = self.get_leaf_node(oo)
         self.NEG_oo = self.get_leaf_node(-oo)
         self.NAN = self.get_leaf_node(sympy.nan)
@@ -138,18 +184,26 @@ class XADD:
     def update_name_space(self, ns):
         self._name_space = ns
 
-    def convert_func_to_xadd(self, term):
+    def convert_func_to_xadd(self, term, **kwargs):
         args = term.as_two_terms()
-        xadd1 = self.convert_to_xadd(args[0])
-        xadd2 = self.convert_to_xadd(args[1])
+        xadd1 = self.convert_to_xadd(args[0], **kwargs)
+        xadd2 = self.convert_to_xadd(args[1], **kwargs)
         op = OP_TYPE[type(term)]
         return self.apply(xadd1, xadd2, op)
 
-    def convert_to_xadd(self, term):
-        if isinstance(term, sympy.Symbol) or isinstance(term, numbers.Number):
-            return self.get_leaf_node(term)
+    def convert_to_xadd(self, term: sympy.Basic, **kwargs):
+        if isinstance(term, sympy.Symbol) or \
+            isinstance(term, numbers.Number) or \
+                isinstance(term, boolalg.BooleanAtom):
+            if term._assumptions.get('bool', False):
+                dec, is_reversed = self.get_dec_expr_index(term, create=True, **kwargs)
+                low, high = self.FALSE, self.TRUE
+                if is_reversed:
+                    low, high = high, low
+                return self.get_internal_node(dec, low, high)
+            return self.get_leaf_node(term, **kwargs)
         else:
-            return self.convert_func_to_xadd(term)
+            return self.convert_func_to_xadd(term, **kwargs)
 
     def build_initial_xadd(self, xadd_as_list: List, to_canonical=True):
         """
@@ -275,7 +329,7 @@ class XADD:
     def get_inode_canon_insert(self, dec: int, low: int, high: int) -> int:
         false_half = self.reduce_insert_node(low, dec, self.ZERO, True)
         true_half = self.reduce_insert_node(high, dec, self.ZERO, False)
-        return self.apply_int(true_half, false_half, 'sum')
+        return self.apply_int(true_half, false_half, 'add')
 
     def reduce_insert_node(
             self, orig: int, dec: int, node_to_insert_on_dec_value: int, dec_value: bool
@@ -314,19 +368,19 @@ class XADD:
         ind_false = self.get_internal_node(dec, self.ONE, self.ZERO)
         true_half = self.apply_int(ind_true, high, 'prod')
         false_half = self.apply_int(ind_false, low, 'prod')
-        result = self.apply_int(true_half, false_half, 'sum')
+        result = self.apply_int(true_half, false_half, 'add')
         return result
     
     def evaluate_decision(
-        self,
-        dec_expr: sympy.Basic,
-        bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
-        cont_assign: Dict[sympy.Symbol, Union[int, float]], 
+            self,
+            dec_expr: sympy.Basic,
+            bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
+            cont_assign: Dict[sympy.Symbol, Union[int, float]], 
     ) -> Union[bool, None]:
         if isinstance(dec_expr, boolalg.BooleanAtom):
             return bool(dec_expr)
         # if a decision expression is a single symbol, it should be a boolean decision
-        elif isinstance(dec_expr, sympy.Symbol):
+        elif dec_expr._assumptions.get('bool', False):
             return bool_assign.get(dec_expr)
         # Inequality decision
         elif isinstance(dec_expr, relational.Rel):
@@ -343,12 +397,12 @@ class XADD:
             return None
         
     def evaluate(
-        self, 
-        node_id: int, 
-        bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
-        cont_assign: Dict[sympy.Symbol, Union[int, float]],
-        primitive_type: bool = False,
-    ) -> Union[float, int, None]:
+            self, 
+            node_id: int, 
+            bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
+            cont_assign: Dict[sympy.Symbol, Union[int, float]],
+            primitive_type: bool = False,
+    ) -> Union[float, int, bool, None]:
         """
         Evaluates a given node by inserting boolean and real values into variables.
         """
@@ -376,15 +430,105 @@ class XADD:
             return
         
         # Return python primitive type
-        if primitive_type:
+        if primitive_type and isinstance(expr, boolalg.BooleanAtom):
+            return bool(expr)
+        elif primitive_type:
             return float(expr)
         
         # Otherwise, return sympy type
         return expr
     
+    def unary_op(self, node_id: int, op: str, *args) -> int:
+        """Applies a unary operation to a given node.
+        This operation only affects the leaf values of a node.
+
+        Args:
+            node_id (int): The id of the operand node
+            op (str): The unary operation to apply
+
+        Returns:
+            int: The ID of the resulting node
+        """
+        ret = self.unary_op_int(node_id, op, *args) 
+        ret = self.make_canonical(ret)
+        return ret
+    
+    def unary_op_int(self, node_id: int, op: str, *args) -> int:
+        node = self.get_exist_node(node_id)
+
+        if node.is_leaf():
+            node = cast(XADDTNode, node)
+            expr = node.expr
+            if op == 'sgn':
+                return self.sgn_op(node_id)
+            elif op == '~':
+                assert check_sympy_boolean(expr)
+                expr = ~expr
+                if isinstance(expr, boolalg.BooleanAtom):
+                    return self.get_leaf_node(expr, node._annotation)
+                else:
+                    return self.get_dec_node(expr, sympy.false, sympy.true)
+            
+            sp_op = UNARY_OP.get(op, None)
+            if sp_op is None:
+                raise ValueError(f"Unary operation {op} not recognized")
+            expr = sympy.expand(sp_op(expr, *args))    # TODO: Need to simplify? that can take a while
+            annotation = node._annotation
+            return self.get_leaf_node(expr, annotation)
+        
+        # Handle an internal node
+        node = cast(XADDINode, node)
+        low = self.unary_op_int(node.low, op)
+        high = self.unary_op_int(node.high, op)
+        
+        dec = node.dec
+        ret = self.get_internal_node(dec, low, high)
+        
+        # TODO: do we need to cache the result?
+        return ret
+
+    def sgn_op(self, node_id: int) -> int:
+        """Implements the sign function...
+        That is,
+
+        sgn(x) = 1  if x > 0
+                 0  if x == 0
+                 -1 otherwise
+        In XADD, this is equivalent to
+            ([x <= 0]
+                ([1])
+                ([x == 0]
+                    ([0])
+                    ([-1])
+                )
+            )
+        which requires introducing a decision that checkes equality.
+        """
+        node = self.get_exist_node(node_id)
+        assert node.is_leaf()
+        
+        node = cast(XADDTNode, node)
+        expr = node.expr
+        
+        dec_expr1 = expr <= 0
+        dec1, is_reversed = self.get_dec_expr_index(dec_expr1, create=True)
+        dec_expr2 = sympy.Eq(expr, 0)
+        low = self.ONE        
+        high = self.get_dec_node(dec_expr2, sympy.S(-1), sympy.S(0))
+        
+        if is_reversed:
+            high, low = low, high
+        
+        ret = self.get_internal_node(dec1, low, high)
+        ret = self.make_canonical(ret)
+        return ret
+
     def apply(self, id1: int, id2: int, op: str, annotation=None) -> int:
         """
-        Recursively apply op(node1, node2). op can be min, max, sum, minus, prod.
+        Recursively apply op(node1, node2). 
+        op can be 
+                'min', 'max', 'sum', 'minus', 'prod', 'div' for non-Boolean operations
+            or  'or', 'and' for Boolean operations.
         :param id1:
         :param id2:
         :param op:
@@ -392,12 +536,12 @@ class XADD:
         :return:
         """
         ret = self.apply_int(id1, id2, op, annotation)
-        if op == 'min' or op == 'max':
+        if op in ('min', 'max', '!=', '==', '>', '>=', '<', '<=', 'or', 'and'):
             ret = self.make_canonical(ret)
         return ret
 
     def get_apply_cache(self) -> dict:
-        """This code is not used in this branch"""
+        """This method is not used in this branch"""
         assert self._opt_var is not None
         hm = self._apply_caches.get(self._opt_var, None)
         if hm is not None:
@@ -412,7 +556,9 @@ class XADD:
         Recursively apply op(node1, node2).
         :param id1:         (int) index of node 1
         :param id2:         (int) index of node 2
-        :param op:          (str) 'max', 'min', 'sum', 'minus', 'prod'
+        :param op:          (str) 'max', 'min', 'add', 'subtract', 'prod', 'div' (non-Boolean)
+                                  'or', 'and' (Boolean)
+                                  '!=', '==', '>', '>=', '<', '<=' (Relational)
         :return:
         """
         # Check apply cache and return if found
@@ -477,112 +623,154 @@ class XADD:
             self, id1: int, n1: Node, id2: int, n2: Node, op: str, annotation: Union[tuple, None]
     ):
         """
-        %Update%
-        To support 0-1 knapsack problem with DP, summation operation now keep the track of annotation (when provided).
-        In this case, annotation[0] is assumed to be None, and we concatenate annotation[1] to n1._annotation if
-        both nodes are leaf nodes.
-        Unlike in the case of argmin(max) over an LP, annotations in knapsack correspond to indices of items selected to
-        the knapsack. Hence, an annotation is a tuple of integers.
-
-        In the case of argmin(max), annotations represent a node id corresponding to either a lower or an upper bound
-        that has led to the min (or max) value as a result of the current method.
-
         :param id1:         (int)
         :param n1:          (Node)
         :param id2:         (int)
         :param n2:          (Node)
-        :param op:          (str) 'max', 'min', 'sum', 'minus', 'prod'
+        :param op:          (str) 'max', 'min', 'add', 'subtract', 'prod', 'div' (non-Boolean)
+                                  'or', 'and' (Boolean)
+                                  '!=', '==', '>', '>=', '<', '<=' (Relational)
         :param annotation:  (tuple)
         :return:
         """
-        assert op in ('max', 'min', 'sum', 'prod')
+        assert op in {
+            'max', 'min', 'add', 'prod', 'subtract', 'div', 
+            'and', 'or', 
+            '!=', '==', '>', '>=', '<', '<='
+        }
+
         # NaN cannot become valid by operations
         # But, this would not occur unless we intended..
         # Hence, just deal with NaNs when two leaf nodes are compared
         if ((id1 == self.NAN) or (id2 == self.NAN)) and (n1.is_leaf() and n2.is_leaf()):
             return self.NAN
+        elif (n1.is_leaf() and id2 == self.ZERO and op == 'div'):       # Division by zero results in NAN
+            return self.NAN
         elif (id1 == self.NAN) or (id2 == self.NAN):
             return None
-
+        
         # 0 * x = 0
         if op == 'prod' and (id1 == self.ZERO or id2 == self.ZERO):
             return self.ZERO
 
-        # Identities (1 * x = x, 0 + x = x)
-        if annotation is None:
-            if (op == 'sum' and id1 == self.ZERO):
-                return id2
-            if (op == 'prod' and id1 == self.ONE):
-                return id2
-            if ((op == 'sum' or op == 'minus') and id2 == self.ZERO) or (op == 'prod' and id2 == self.ONE):
-                return id1
-
-        # Infinity identities
-        # Due to annotations, XADDTNodes with oo or -oo as expression may have different node id.
-        # Therefore, check for node.is_leaf() first.. and maintain annotations (if exist) always.
-        # Furthermore, when n1.expr == n2.expr == oo (or -oo), we need to annotate the resulting oo (or -oo) node
-        # as NaN, since those indicate infeasible paths.
+        # Identities (1 * x = x, 0 + x = x, x / 1 = x, x - 0 = 0) (Note: annotations are ignored for these ops)
+        if (op == 'add' and id1 == self.ZERO) or (op == 'prod' and id1 == self.ONE):
+            return id2
+        if (op == 'div' and id2 == self.ONE) or \
+            (op == 'prod' and id2 == self.ONE) or \
+            ((op == 'add' or op == 'subtract') and id2 == self.ZERO):
+            return id1
+        
+        # Infinity identities  
         if n1.is_leaf() and n1.expr == oo:
             n1 = cast(XADDTNode, n1)
             if not n2.is_leaf():
-                if op == 'max' or op == 'sum' or op == 'minus':
+                if op in ('max', 'add', 'subtract'):
                     return self.get_leaf_node_from_node(n1)                 # To retain annotation (if exists)
                 elif op == 'min':
                     return id2
+                elif op == '>=' or op == '>':
+                    return self.TRUE
             else:
                 n2 = cast(XADDTNode, n2)
-                if n2.expr != oo and (op in ('max', 'sum', 'minus')):
+                if n2.expr != oo and op in ('max', 'add', 'subtract'):
                     return self.get_leaf_node_from_node(n1)                 # To retain annotation (if exists)
-                elif n2.expr != oo and (op == 'min'):
+                elif n2.expr != oo and op == 'min':
                     return id2 if annotation is None else self.get_leaf_node(n2.expr, annotation[1])
-                elif n2.expr == oo and (op in ('max', 'min', 'sum', 'prod')):
+                elif n2.expr == oo and op in ('max', 'min', 'add', 'prod'):
                     ret_node = self.get_leaf_node(oo, annotation=self.NAN)
                     # self.add_special_node(ret_node)
                     return ret_node
+            if op == '==':
+                return self.FALSE                   # cannot evaluate equivalence of oo with other values
+            elif op == '!=':
+                return self.TRUE                    # (+-)oo will always be different than other values 
 
         elif n1.is_leaf() and n1.expr == -oo:
             n1 = cast(XADDTNode, n1)
             if not n2.is_leaf():
-                if op in ('sum', 'minus', 'min'):
+                if op in ('add', 'subtract', 'min'):
                     return self.get_leaf_node_from_node(n1)
                 elif op == 'max':
                     return id2
+                elif op == '<=' or op == '<':
+                    return self.TRUE
             else:
                 n2 = cast(XADDTNode, n2)
-                if n2.expr != -oo and (op in ('sum', 'min', 'minus')):
+                if n2.expr != -oo and (op in ('add', 'min', 'subtract')):
                     return self.get_leaf_node_from_node(n1)
                 elif n2.expr != -oo and op == 'max':
                     return id2 if annotation is None else self.get_leaf_node(n2.expr, annotation[1])
-                elif n2.expr == -oo and (op in ('max', 'min', 'sum')):
+                elif n2.expr == -oo and (op in ('max', 'min', 'add')):
                     ret_node = self.get_leaf_node(-oo, annotation=self.NAN)
                     return ret_node
                 elif n2.expr == -oo and op == 'prod':
                     ret_node = self.get_leaf_node(oo, annotation=self.NAN)
                     return ret_node
+                elif op == '<=' or op == '<':
+                    return self.TRUE
+            if op == '==':
+                return self.FALSE                   # cannot evaluate equivalence of oo with other values
+            elif op == '!=':
+                return self.TRUE                    # (+-)oo will always be different than other values 
 
         if n2.is_leaf() and n2.expr == oo:
             # n1 cannot be oo or -oo at this point..
             n2 = cast(XADDTNode, n2)
-            if op == 'sum' or op == 'max':
+            if op == 'add' or op == 'max':
                 return self.get_leaf_node_from_node(n2)
             elif op == 'min':
                 if annotation is None:      # If annotation is given, need to annotate them at leaf nodes
                     return id1
                 if n1.is_leaf():
                     return self.get_leaf_node(n1.expr, annotation[0])
-            elif op == 'minus':
+            elif op == 'subtract':
                 return self.NEG_oo
+            elif op == 'div':
+                return self.ZERO
+            elif op == '>=' or op == '>':
+                return self.FALSE
+            elif op == '<=' or op == '<':
+                return self.TRUE
+            elif op == '==':
+                return self.FALSE                   # cannot evaluate equivalence of oo with other values
+            elif op == '!=':
+                return self.TRUE                    # (+-)oo will always be different than other values 
+            
         elif n2.is_leaf() and n2.expr == -oo:
             n2 = cast(XADDTNode, n2)
-            if op == 'sum' or op == 'min':
+            if op == 'add' or op == 'min':
                 return self.get_leaf_node_from_node(n2)
             elif op == 'max':
                 if not n1.is_leaf():
                     return id1
                 else:
                     return id1 if annotation is None else self.get_leaf_node(n1.expr, annotation[0])
-            elif op == 'minus':
+            elif op == 'subtract':
                 return self.oo
+            elif op == 'div':
+                return self.ZERO
+            elif op == '<=' or op == '<':
+                return self.FALSE
+            elif op == '>=' or op == '>':
+                return self.TRUE
+            elif op == '==':
+                return self.FALSE                   # cannot evaluate equivalence of oo with other values
+            elif op == '!=':
+                return self.TRUE                    # (+-)oo will always be different than other values 
+
+        # Handle 'and' and 'or' operations when it can be immediately evaluated
+        if op == 'or' or op == 'and':
+            if n1.is_leaf() and isinstance(n1.expr, boolalg.BooleanAtom):
+                if op == 'or' and n1.expr:
+                    return self.TRUE
+                if op == 'and' and not n1.expr:
+                    return self.FALSE
+            if n2.is_leaf() and isinstance(n2.expr, boolalg.BooleanAtom):
+                if op == 'or' and n2.expr:
+                    return self.TRUE
+                if op == 'and' and not n2.expr:
+                    return self.FALSE
 
         if n1.is_leaf() and n2.is_leaf():
             n1 = cast(XADDTNode, n1); n2 = cast(XADDTNode, n2)
@@ -590,35 +778,83 @@ class XADD:
             if id1 == self.NAN or id2 == self.NAN:
                 return self.NAN
             
-            # Operations: +, -, *
+            # Operations: +, -, *, /
             # No need to take care of annotations for these operations
-            if op != 'max' and op != 'min':
-                n1_expr, n2_expr = n1.expr, n2.expr
-                if op == 'sum':
-                    result = n1_expr + n2_expr
-                elif op == 'minus':
-                    result = n1_expr - n2_expr
+            # When an arithmetic operation is applied to boolean expression(s),
+            # need to create a decision node
+            n1_expr, n2_expr = n1.expr, n2.expr
+            if op in ('add', 'subtract', 'prod', 'div') and \
+                (n1_expr._assumptions.get('bool', False) or 
+                 isinstance(n1_expr, boolalg.BooleanAtom) or
+                 n2_expr._assumptions.get('bool', False) or 
+                 isinstance(n2_expr, boolalg.BooleanAtom) 
+            ):
+                if n1_expr._assumptions.get('bool', False):
+                    dec_node1 = self.get_dec_node(n1_expr, sympy.S(0), sympy.S(1))
+                elif isinstance(n1_expr, boolalg.BooleanAtom):
+                    dec_node1 = self.ONE if n1_expr else self.ZERO
                 else:
+                    dec_node1 = id1
+                if n2_expr._assumptions.get('bool', False):
+                    dec_node2 = self.get_dec_node(n2_expr, sympy.S(0), sympy.S(1))
+                elif isinstance(n2_expr, boolalg.BooleanAtom):
+                    dec_node2 = self.ONE if n2_expr else self.ZERO
+                else:
+                    dec_node2 = id2
+                return self.apply(dec_node1, dec_node2, op)
+                
+            if op in ('add', 'subtract', 'prod', 'div', 'and', 'or'):
+                
+                if op == 'add':
+                    result = n1_expr + n2_expr
+                elif op == 'subtract':
+                    result = n1_expr - n2_expr
+                elif op == 'prod':
                     result = sympy.expand(n1_expr * n2_expr)
+                elif op == 'div':
+                    result = sympy.expand(n1_expr / n2_expr)
+                else:
+                    assert check_sympy_boolean(n1_expr)
+                    assert check_sympy_boolean(n2_expr)
+                    dec_n2 = self.get_dec_node(n2_expr, sympy.false, sympy.true)
+                    dec_n1_id, is_reversed = self.get_dec_expr_index(n1_expr, create=True)
+                    if op == 'and':
+                        high, low = dec_n2, self.FALSE
+                    elif op == 'or':
+                        high, low = self.TRUE, dec_n2
+                    if is_reversed:
+                        high, low = low, high
+                    result = self.get_internal_node(dec_n1_id, low, high)
+                    return result
                 return self.get_leaf_node(result)
 
-            # The canonical form of decision expression: (lhs - rhs <= 0)
-            lhs = n1.expr - n2.expr
-            rhs = 0
-            expr = lhs <= rhs
+            # The canonical form of decision expression: (lhs - rhs 'rel' 0)
+            # Handle relational operations
+            if op in RELATIONAL_OPERATOR:
+                lhs = n1.expr - n2.expr
+                expr = RELATIONAL_OPERATOR[op](lhs, 0)      # can handle '==' (Equality), '!=' (Unequality), '>', '>=', '<', '<='
+            # Handle min, max operations
+            else:
+                lhs = n1.expr - n2.expr
+                rhs = 0
+                expr = lhs <= rhs
 
             # handle tautological cases
-            if expr == sympy.S.true:        # n1 <= n2 holds
-                if op == 'min':
+            if expr == sympy.S.true:        
+                if op == 'min':             # n1 <= n2 holds
                     return self.get_leaf_node(n1.expr, annotation[0]) if annotation is not None else id1
-                else:
+                elif op == 'max':           # n1 <= n2 holds
                     return self.get_leaf_node(n2.expr, annotation[1]) if annotation is not None else id2
-            elif expr == sympy.S.false:     # n1 > n2 holds
-                if op == 'min':
+                else:                       # n1 (rel) n2 holds
+                    return self.TRUE
+            elif expr == sympy.S.false:
+                if op == 'min':             # n1 > n2 holds
                     return self.get_leaf_node(n2.expr, annotation[1]) if annotation is not None else id2
-                else:
+                elif op == 'max':           # n1 > n2 holds
                     return self.get_leaf_node(n1.expr, annotation[0]) if annotation is not None else id1
-
+                else:                       # n1 (rel) n2 does not hold
+                    return self.FALSE
+            
             if annotation is not None:
                 id1 = self.get_leaf_node(n1.expr, annotation[0])
                 id2 = self.get_leaf_node(n2.expr, annotation[1])
@@ -626,49 +862,21 @@ class XADD:
                 id1 = self.get_leaf_node(n1.expr, n1._annotation)
                 id2 = self.get_leaf_node(n2.expr, n2._annotation)
 
-            canon_expr, is_reversed = self.canonical_dec_expr(expr)
-            if isinstance(canon_expr, tuple):
-                """
-                A factored bilinear term returned: need to build an XADD accordingly
-                For example,
-                    canon_expr = ((z1 + z2 - z3), (w1 + w2 + w3)); is_reversed = False
-                    Then, ([ w1 + w2 + w3 <= 0 ]
-                              ([ z1 + z2 - z3 <= 0 ])
-                                   ([ n2.expr ])
-                                   ([ n1.expr ]))
-                              ([ z1 + z2 - z3 <= 0 ])
-                                   ([ n1.expr ])
-                                   ([ n2.expr ])
-                              )
-                          )
-                    The leaf values will be swapped if is_reversed.  
-                """
-                expr1, expr2 = canon_expr
-                expr_index1, is_reversed1 = self.get_dec_expr_index(expr1 <= 0, create=True)
-                expr_index2, is_reversed2 = self.get_dec_expr_index(expr2 <= 0, create=True)
-
-                if bool(is_reversed) ^ bool(is_reversed1):
-                    id1, id2 = id2, id1
-
-                high_node = self.get_internal_node(expr_index1, low=id1, high=id2)
-                low_node = self.get_internal_node(expr_index1, low=id2, high=id1)
-
-                if is_reversed2:
-                    high_node, low_node = low_node, high_node
-                low = high_node if op == 'max' else low_node
-                high = low_node if op == 'max' else high_node
-                ret = self.get_internal_node(expr_index2, low=low, high=high)
-                return ret
-            else:
-                expr_index, _ = self.get_dec_expr_index(canon_expr, create=True, canon=True)
-
+            expr_index, is_reversed = self.get_dec_expr_index(expr, create=True)
+            
+            # min / max operations
+            if op == 'min' or op == 'max':
                 # Swap low and high branches if reversed
                 if is_reversed:
                     id1, id2 = id2, id1
                 low = id1 if op == 'max' else id2
                 high = id2 if op == 'max' else id1
-
-                return self.get_internal_node(expr_index, low=low, high=high)
+            # relational operations
+            else:
+                high, low = self.TRUE, self.FALSE
+                if is_reversed:
+                    high, low = low, high
+            return self.get_internal_node(expr_index, low=low, high=high)
         return None
 
     def substitute(self, node_id: int, subst_dict: dict) -> int:
@@ -795,7 +1003,7 @@ class XADD:
         ret = self.reduce_op(node_id, dec_id, op)
 
         # Operations like sum and product may get decisions out of order
-        if op == 'sum' or op == 'prod':
+        if op == 'add' or op == 'prod':
             return self.make_canonical(ret)
         else:
             return ret
@@ -944,48 +1152,6 @@ class XADD:
             running_result = min_or_max._running_result
         return running_result
 
-    def reduce_process_xadd_leaf(
-            self, 
-            node_id: int, 
-            leaf_op,        # XADDLeafOperation
-            decisions: list, 
-            decision_values: list
-    ):
-        """
-
-        :param node_id:
-        :param leaf_op:
-        :param decisions:
-        :param decision_values:
-        :return:
-        """
-        node = self.get_exist_node(node_id)
-        if node.is_leaf():
-            return leaf_op.process_xadd_leaf(decisions, decision_values, node.expr)
-
-        # Internal node
-        dec_expr = self._id_to_expr.get(node.dec)
-
-        # Recurse the False branch
-        decisions.append(dec_expr)
-        decision_values.append(False)
-        low = self.reduce_process_xadd_leaf(node.low, leaf_op, decisions, decision_values)
-
-        # Recurse the True branch
-        decision_values[-1] = True
-        high = self.reduce_process_xadd_leaf(node.high, leaf_op, decisions, decision_values)
-
-        decisions.pop()
-        decision_values.pop()
-
-        ret = self.get_internal_node(node.dec, low, high)
-        if isinstance(leaf_op, DeltaFunctionSubstitution):
-            ret = self.make_canonical(ret)
-
-        # Put return value in cache and return  # TODO: this does not distinguish different leaf operations
-        self._reduce_leafop_cache[node_id] = ret
-        return ret
-
     def substitute_xadd_for_var_in_expr(
             self, leaf_val: sympy.Basic, var: sympy.Symbol, xadd: int
     ) -> int:
@@ -1048,11 +1214,26 @@ class XADD:
         expr, annotation = node.expr, node._annotation
         return self.get_leaf_node(expr, annotation)
 
-    def get_leaf_node(self, expr: sympy.Basic, annotation: Optional[int] = None) -> int:
-        """
-        :param expr:            (sympy.Basic) symbolic expression, not id
-        :param annotation:      (int) id of annotation XADD
-        :return:
+    def get_leaf_node(
+            self, expr: sympy.Basic, annotation: Optional[int] = None, **kwargs
+    ) -> int:
+        """Returns the ID of the leaf node with given SymPy expression and annotation.
+
+        Note that if a new random variable is added within this method,
+        kwargs should have the necessary parameters to specify the random variable.
+        
+        For example, for a uniform random variable, we need
+            {'params': [lb, ub]} where lb and ub are the lower and upper bounds of the uniform 
+            distribution, respectively.
+        
+        If this information was not provided, this method will result in an assertion error.
+        
+        Args:
+            expr (sympy.Basic): The SymPy expression associated with the leaf node.
+            annotation (Optional[int], optional): The node ID of the annotation.
+        
+        Returns:
+            int: _description_
         """
         self._temp_term_node.set(expr, annotation)
         node_id = self._node_to_id.get(self._temp_term_node, None)
@@ -1066,19 +1247,23 @@ class XADD:
 
             # add in all new variables
             vars_in_expr = expr.free_symbols.copy()
-            diff_vars = vars_in_expr.difference(self._var_set)
+            diff_vars = vars_in_expr.difference(self._cont_var_set).difference(self._bool_var_set)
             for v in diff_vars:
-                # Boolean variables would have been added immediately so are already in self._bool_var_set
-                if not v in self._bool_var_set:
-                    num_existing_cvar = len(self._var_set)
-                    self._var_set.add(v)
-                    self._str_var_to_var[str(v)] = v
-                    self._cvar_to_id[v] = num_existing_cvar
-                    self._id_to_cvar[num_existing_cvar] = v
+                if v._assumptions.get('bool', False):
+                    self.add_boolean_var(v)
+                else:
+                    self.add_continuous_var(v)
+                if v._assumptions.get('random', False):
+                    assert kwargs.get('params') is not None
+                    assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
+                    self.add_random_var(v, **kwargs)
         return node_id
 
     def get_dec_node(
-            self, dec_expr: relational.Rel, low_val: Union[float, int, bool], high_val: Union[float, int, bool]
+            self, 
+            dec_expr: Union[relational.Rel, sympy.Symbol, boolalg.BooleanFunction],
+            low_val: sympy.Basic, 
+            high_val: sympy.Basic
     ) -> int:
         """
         Get decision node with relational expression having dec, whose low and high values are also given.
@@ -1116,103 +1301,72 @@ class XADD:
         elif expr == sympy.S.false:
             return expr, is_reversed
 
+        # Handle boolean expressions
+        if not isinstance(expr, relational.Rel):
+            if isinstance(expr, boolalg.Not):
+                expr = ~expr
+                is_reversed = True
+            if not expr._assumptions.get('bool', False):
+                print(f"Expression {expr} will be treated as Boolean")
+                expr._assumptions['bool'] = True
+                if expr in self._cont_var_set:
+                    self._cont_var_set.remove(expr)
+                if expr not in self._bool_var_set:
+                    self._bool_var_set.add(expr)
+            return expr, is_reversed
+        
         # Always make 'lhs - rhs <= 0' as canonical expression
         lhs, rhs, rel = expr.lhs, expr.rhs, REL_TYPE[type(expr)]
         lhs = lhs - rhs
 
         if rel == '>=' or rel == '>':
             is_reversed = True
+            rel = '<=' if rel == '>=' else '<'
 
-        # Try factorization when the degree of expression is higher than 1
-        poly = lhs.as_poly()
-        deg = poly.total_degree()
+        # Divide lhs by the coefficient of the first term (cannot be a negative number)
+        coeff_first_term = lhs.as_ordered_terms()[0]
+        if isinstance(coeff_first_term, sympy.core.Number):
+            coeff_first_term = lhs.as_ordered_terms()[1]
 
-        if deg == 1:
-            # Divide lhs by the coefficient of the first term (cannot be a negative number)
-            coeff_first_term = lhs.as_ordered_terms()[0]
-            if isinstance(coeff_first_term, sympy.core.Number):
-                coeff_first_term = lhs.as_ordered_terms()[1]
-
-            if isinstance(coeff_first_term, sympy.core.Mul):
-                arg1 = coeff_first_term.args[0]
-                if isinstance(arg1, sympy.core.Number) and arg1 > 0:
-                    lhs = lhs / arg1
-                elif isinstance(arg1, sympy.core.Number) and arg1 < 0:
-                    lhs = lhs / arg1
-                    # divided by a negative number changes the direction of inequality
+        if isinstance(coeff_first_term, sympy.core.Mul):
+            arg1 = coeff_first_term.args[0]
+            if isinstance(arg1, sympy.core.Number) and arg1 > 0:
+                lhs = lhs / arg1
+            elif isinstance(arg1, sympy.core.Number) and arg1 < 0:
+                lhs = lhs / arg1
+                # divided by a negative number changes the direction of inequality
+                if rel in ('<=', '<', '>', '>='):
                     is_reversed = True if not is_reversed else False
-
-            expr = relational.Relational(lhs, 0, "<=")
-            return expr, is_reversed
-
-        elif deg == 2:
-            lhs_factored, is_reversed_ = self.factor_expr(lhs)
-            if is_reversed_:
-                is_reversed = True if not is_reversed else False
-            # If no factorization occurred, just create a relational expression
-            if not isinstance(lhs_factored, tuple):
-                expr = relational.Relational(lhs_factored, 0, "<=")
-                return expr, is_reversed
-            return lhs_factored, is_reversed
-        else:
-            raise ValueError("An expression with degree higher than 2 is not supported (yet?)")
-
-    def factor_expr(
-            self, expr: sympy.Basic
-    ) -> Tuple[Union[Tuple[sympy.Basic, sympy.Basic], sympy.Basic], bool]:
-        ret = self._factor_cache.get(expr, None)
-        is_reversed = False
-
-        if ret is not None:
-            expr = ret
-        else:
-            ret = sympy.factor(expr)
-            self._factor_cache[expr] = ret
-            expr = ret
-
-        # If not factorized... just remove the constant multiplication
-        if isinstance(expr, sympy.core.Add):
-            first_term = expr.as_ordered_terms()[0]
-            if isinstance(first_term, sympy.core.numbers.Number):
-                first_term = expr.as_ordered_terms()[1]
-            if isinstance(first_term, sympy.core.Mul):
-                arg1 = first_term.args[0]
-                if isinstance(arg1, sympy.core.numbers.Number) and arg1 > 0:
-                    expr = expr / arg1
-                elif isinstance(arg1, sympy.core.numbers.Number) and arg1 < 0:
-                    expr = expr / arg1
-                    is_reversed = True if not is_reversed else False
-
-        # Remove the constant term (if exists) multiplied
-        if isinstance(expr, sympy.core.Mul):
-            arg1 = expr.args[0]
-            if isinstance(arg1, sympy.core.numbers.Number):
-                expr = expr / arg1
-                if arg1 < 0:
-                    is_reversed = True if not is_reversed else False
-
-        if isinstance(expr, sympy.core.Mul):
-            # This check works only for bilinear (or quadratic) expressions
-            assert len(expr.args) <= 2, "Once a constant multiplication is removed, there should be maximum 2 args"
-            return expr.args, is_reversed
-        else:
-            return expr, is_reversed
+        
+        expr = relational.Relational(lhs, 0, rel)
+        return expr, is_reversed
 
     def get_dec_expr_index(
-            self, expr: sympy.Basic, create: bool, canon: bool = False
+            self, expr: sympy.Basic, create: bool, canon: bool = False, **kwargs
     ) -> Tuple[Union[boolalg.BooleanAtom, int], bool]:
-        """
-        Given a symbolic expression 'expr', return the index of the expression in XADD._id_to_expr.
-        :param expr:            (sympy.Basic)
-        :param create:          (bool)
-        :return:                (int)
+        """Given a symbolic expression 'expr', return the index of the expression in XADD._id_to_expr.
+        
+        Note that if a new random variable is included in the expression,
+        kwargs should have the necessary parameters to specify the random variable.
+        
+        For example, for a uniform random variable, we need
+            {'params': [lb, ub]} where lb and ub are the lower and upper bounds of the uniform 
+            distribution, respectively.
+        
+        If this information was not provided, this method will result in an assertion error.
+        
+        Args:
+            expr (sympy.Basic): The expression to be used as a decision. This can be a relational
+                expression or just a boolean variable.
+            create (bool): Whether to assign a new ID for the given expression.
+            canon (bool, optional): Deprecated... TODO: check whether this can safely removed.
+
+        Returns:
+            Tuple[Union[boolalg.BooleanAtom, int], bool]: _description_
         """
         is_reversed = False
-        if not canon and isinstance(expr, relational.Rel):
+        if not canon:
             expr, is_reversed = self.canonical_dec_expr(expr)
-
-        if expr == sympy.S.true or expr == sympy.S.false:
-            return expr, is_reversed
 
         index = self._expr_to_id.get(expr, None)
 
@@ -1224,24 +1378,28 @@ class XADD:
             return index, is_reversed
         # If nothing's found, create one and store
         else:
-            vars_in_expr = expr.free_symbols.copy()
             index = XADD._func_var_index(self, expr)
             self._expr_to_id[expr] = index
             self._id_to_expr[index] = expr
-
-            # Boolean decision
-            if isinstance(expr, sympy.Symbol):
-                self._bool_var_set.update(vars_in_expr)
-            # Relational decision
-            else:
-                
-                diff_vars = vars_in_expr.difference(self._var_set)
-                for v in diff_vars:
-                    num_existing_cvar = len(self._var_set)
-                    self._var_set.add(v)
-                    self._str_var_to_var[str(v)] = v
-                    self._cvar_to_id[v] = num_existing_cvar
-                    self._id_to_cvar[num_existing_cvar] = v
+            
+            # Check whether the expression is at most linear in free variables
+            is_linear = check_expr_linear(expr)
+            self._expr_to_linear_check[expr] = is_linear
+            self._expr_id_to_linear_check[index] = is_linear
+            
+            # Add in all new variables
+            vars_in_expr = expr.free_symbols.copy()
+            diff_vars = vars_in_expr.difference(self._cont_var_set).\
+                difference(self._bool_var_set).difference(self._random_var_set)
+            for v in diff_vars:
+                if v._assumptions.get('bool', False):
+                    self.add_boolean_var(v)
+                else:
+                    self.add_continuous_var(v)
+                if v._assumptions.get('random', False):
+                    assert kwargs.get('params') is not None
+                    assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
+                    self.add_random_var(v, **kwargs)
         return index, is_reversed
 
     def get_exist_node(self, node_id: int) -> Node:
@@ -1284,6 +1442,101 @@ class XADD:
             self._nodeCounter += 1
         return node_id
 
+    def reduce_sample(
+            self, 
+            node_id: int, 
+            use_expectation: bool = False, 
+            rng: np.random.Generator = None
+    ) -> int:
+        """Samples all random variables existing in the given node and return the
+        ID of the reduced node with all random values instantiated 
+
+        Args:
+            node_id (int): The XADD node
+            use_expectation (bool, optional): Whether to use the expected value instead of sampling
+            rng (np.random.Generator, optional): The random number generator to use
+
+        Returns:
+            int: The ID of the reduce node after sampling
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+        
+        node = self.get_exist_node(node_id)
+
+        if node.is_leaf():
+            node = cast(XADDTNode, node)
+            expr = node.expr
+            rvs = [v for v in expr.free_symbols if v in self._random_var_set]
+            if len(rvs) == 0:
+                return node_id
+            types = [self._rv_to_type[rv] for rv in rvs]
+            params = [self._rv_to_params[rv] for rv in rvs]
+            samples = sample_rvs(rvs, types, params, rng, use_expectation)
+            expr = expr.xreplace(samples)
+            return self.get_leaf_node(expr, annotation=node._annotation)
+        
+        # Handle an internal node
+        node = cast(XADDINode, node)
+        low = self.reduce_sample(node.low, use_expectation, rng)
+        high = self.reduce_sample(node.high, use_expectation, rng)
+
+        dec = node.dec
+        dec_expr = self._id_to_expr[dec]
+        rvs = [v for v in dec_expr.free_symbols if v in self._random_var_set]
+        if len(rvs) != 0:
+            types = [self._rv_to_type[rv] for rv in rvs]
+            params = [self._rv_to_params[rv] for rv in rvs]
+            samples = sample_rvs(rvs, types, params, rng, use_expectation)
+            dec_expr = dec_expr.xreplace(samples)
+            dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
+            if is_reversed:
+                low, high = high, low
+        
+        return self.get_internal_node(dec, low, high)
+
+    def reduce_process_xadd_leaf(
+            self, 
+            node_id: int, 
+            leaf_op,        # XADDLeafOperation
+            decisions: list, 
+            decision_values: list
+    ) -> int:
+        """
+
+        :param node_id:
+        :param leaf_op:
+        :param decisions:
+        :param decision_values:
+        :return:
+        """
+        node = self.get_exist_node(node_id)
+        if node.is_leaf():
+            return leaf_op.process_xadd_leaf(decisions, decision_values, node.expr)
+
+        # Internal node
+        dec_expr = self._id_to_expr.get(node.dec)
+
+        # Recurse the False branch
+        decisions.append(dec_expr)
+        decision_values.append(False)
+        low = self.reduce_process_xadd_leaf(node.low, leaf_op, decisions, decision_values)
+
+        # Recurse the True branch
+        decision_values[-1] = True
+        high = self.reduce_process_xadd_leaf(node.high, leaf_op, decisions, decision_values)
+
+        decisions.pop()
+        decision_values.pop()
+
+        ret = self.get_internal_node(node.dec, low, high)
+        if isinstance(leaf_op, DeltaFunctionSubstitution):
+            ret = self.make_canonical(ret)
+
+        # Put return value in cache and return  # TODO: this does not distinguish different leaf operations
+        self._reduce_leafop_cache[node_id] = ret
+        return ret
+    
     """
     Verifying feasibility and redundancy of all paths in the XADD
     """
@@ -1434,6 +1687,48 @@ class XADDLeafOperation(metaclass=abc.ABCMeta):
         pass
 
 
+class ControlFlow(XADDLeafOperation):
+    def __init__(
+            self,
+            true_branch: int,
+            false_branch: int,
+            context: XADD,
+    ):
+        """Returns a node that implements a control flow.
+        
+        That is, if a leaf node evaluates to true, the true branch will be attached,
+        otherwise the false branch is attached.
+
+        This operation needs to call make_canonical to correct the variable ordering.
+
+        Args:
+            true_branch (int): The node id for the true branch
+            false_branch (int): The node id for the false branch
+            context (XADD): The XADD context manager
+        """
+        super().__init__(context)
+        self._true_branch = true_branch
+        self._false_branch = false_branch
+
+    def process_xadd_leaf(self, decisions: list, decision_values: list, leaf_val: sympy.Basic):
+        assert check_sympy_boolean(leaf_val) or leaf_val == 1 or leaf_val == 0
+        
+        if isinstance(leaf_val, boolalg.BooleanAtom):
+            if leaf_val:
+                return self._true_branch
+            else:
+                return self._false_branch
+        
+        dec, is_reversed = self._context.get_dec_expr_index(leaf_val, create=True)
+        low = self._false_branch
+        high = self._true_branch
+        if is_reversed:
+            high, low = low, high
+        ret = self._context.get_internal_node(dec, low, high)
+        ret = self._context.make_canonical(ret)
+        return ret
+
+
 class DeltaFunctionSubstitution(XADDLeafOperation):
     def __init__(
             self,
@@ -1457,8 +1752,11 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
             return self._context.NAN
         # If boolean variable, handle differently
         elif self._subVar in self._context._bool_var_set:
-            self._leafSubs[self._subVar] = True if leaf_val == 1 or (isinstance(leaf_val, bool) and leaf_val)\
-                                                else False
+            self._leafSubs[self._subVar] = True \
+                if leaf_val == 1 or \
+                    ((isinstance(leaf_val, boolalg.BooleanAtom) or isinstance(leaf_val, bool)) 
+                        and leaf_val)\
+                else False
             return self._context.substitute_bool_vars(self._xadd_sub_at_leaves, self._leafSubs)
         # Continuous variable
         else:
@@ -1608,7 +1906,7 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                 ind_false = self._context.get_internal_node(dec, self._context.ONE, self._context.ZERO)     # but this is skipped in this branch
                 upper_half = self._context.apply(ind_true if not is_reversed else ind_false, eval_upper, 'prod')
                 lower_half = self._context.apply(ind_false if not is_reversed else ind_true, eval_lower, 'prod')
-                min_max_eval = self._context.apply(upper_half, lower_half, 'sum',
+                min_max_eval = self._context.apply(upper_half, lower_half, 'add',
                                                    annotation=(xadd_upper_bound, xadd_lower_bound) if self._annotate else None)
                 min_max_eval = self._context.make_canonical(min_max_eval)
         else:
@@ -1794,7 +2092,7 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                 ind_false = self._context.get_internal_node(dec, self._context.ONE, self._context.ZERO)     # but this is skipped in this branch
                 upper_half = self._context.apply(ind_true if not is_reversed else ind_false, eval_upper, 'prod')
                 lower_half = self._context.apply(ind_false if not is_reversed else ind_true, eval_lower, 'prod')
-                min_max_eval = self._context.apply(upper_half, lower_half, 'sum',
+                min_max_eval = self._context.apply(upper_half, lower_half, 'add',
                                                    annotation=(xadd_upper_bound, xadd_lower_bound))
                 min_max_eval = self._context.make_canonical(min_max_eval)
         else:
