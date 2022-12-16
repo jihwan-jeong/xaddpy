@@ -20,8 +20,9 @@ UNARY_OP = {
     'sin': sympy.sin, 'cos': sympy.cos, 'tan': sympy.tan, 'exp': sympy.exp, 'abs': abs,
     'log': sympy.log, 'log2': lambda x: sympy.log(x, 2), 'log10': lambda x: sympy.log(x, 10),
     'tanh': sympy.tanh, 'cosh': sympy.cosh, 'sinh': sympy.sinh,
-    'sqrt': sympy.sqrt, 'pow': lambda x, n: sympy.Pow(x, n),
-    'log1p': log1p, '-': lambda x: -x
+    'sqrt': sympy.sqrt, 'pow': lambda x, n: sympy.Pow(x, n), 
+    'floor': sympy.floor, 'ceil': sympy.ceiling,
+    'log1p': log1p, '-': lambda x: -x, '+': lambda x: x,
 }
 EPSILON = 1e-1
 TIMEOUT = 200
