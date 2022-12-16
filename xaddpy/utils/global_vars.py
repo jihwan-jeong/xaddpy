@@ -17,7 +17,7 @@ REL_REVERSED = {'>': '<', '<': '>', '>=': '<=', '<=': '>='}
 REL_NEGATED = {'>': '<=', '<': '>=', '>=': '<', '<=': '>'}
 OP_TYPE = {sympy.core.Mul: 'prod', sympy.core.Add: 'sum'}
 UNARY_OP = {
-    'sin': sympy.sin, 'cos': sympy.cos, 'tan': sympy.tan, 'exp': sympy.exp,
+    'sin': sympy.sin, 'cos': sympy.cos, 'tan': sympy.tan, 'exp': sympy.exp, 'abs': abs,
     'log': sympy.log, 'log2': lambda x: sympy.log(x, 2), 'log10': lambda x: sympy.log(x, 10),
     'tanh': sympy.tanh, 'cosh': sympy.cosh, 'sinh': sympy.sinh,
     'sqrt': sympy.sqrt, 'pow': lambda x, n: sympy.Pow(x, n),
