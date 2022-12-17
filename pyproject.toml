@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xaddpy"
-version = "0.1.5"
+version = "0.1.6"
 authors = [
   { name="Jihwan Jeong", email="jiihwan.jeong@gmail.com" },
 ]
