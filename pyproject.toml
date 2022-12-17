@@ -8,6 +8,8 @@ version = "0.1.7"
 authors = [
   { name="Jihwan Jeong", email="jiihwan.jeong@gmail.com" },
 ]
+license = {file = "LICENSE"}
+keywords  = ["xadd", "xadd python", "symbolic diagram"]
 description = "XADD package in Python"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -16,7 +18,12 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-
+dependencies = [
+  "sympy",
+  "numpy",
+  "pulp",
+  "psutil",
+]
 [project.urls]
 "Homepage" = "https://github.com/jihwan-jeong/xaddpy"
 "Bug Tracker" = "https://github.com/jihwan-jeong/xaddpy/issues"
