@@ -7,7 +7,7 @@ from xaddpy.xadd.xadd import XADD
 def test_bvar_subs():
     context = XADD()
     cwd = Path.cwd()
-    fname = cwd / "test/ex/boolxor.xadd"
+    fname = cwd / "xaddpy/tests/ex/boolxor.xadd"
     
     orig_dd = context.import_xadd(fname)
     print(f"Original XADD: \n{context.get_repr(orig_dd)}")
@@ -21,7 +21,7 @@ def test_bvar_subs():
 def test_mixed_subs():
     context = XADD()
     cwd = Path.cwd()
-    fname = cwd / "test/ex/bool_cont_mixed.xadd"
+    fname = cwd / "xaddpy/tests/ex/bool_cont_mixed.xadd"
     
     orig_dd = context.import_xadd(fname)
     var_set = context.collect_vars(orig_dd)
@@ -52,7 +52,7 @@ def test_mixed_subs():
 def test_mixed_eval():
     context = XADD()
     cwd = Path.cwd()
-    fname = cwd / "test/ex/bool_cont_mixed.xadd"
+    fname = cwd / "xaddpy/tests/ex/bool_cont_mixed.xadd"
     
     orig_dd = context.import_xadd(fname)
     print(f"Original XADD: \n{context.get_repr(orig_dd)}")
