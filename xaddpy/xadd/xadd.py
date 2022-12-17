@@ -4,8 +4,15 @@ import sympy.core.numbers as numbers
 import sympy.core.relational as relational
 from sympy import oo, S
 import numpy as np
+from pathlib import Path
 
 import xaddpy.utils.util
+
+try:
+    from xaddpy.utils.graph import Graph
+except ImportError:
+    pass
+
 from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 from xaddpy.xadd.reduce_lp import ReduceLPContext
 import abc
@@ -1667,6 +1674,30 @@ class XADD:
             xadd_as_list = parse_xadd_grammar(xadd_str, ns=locals if locals is not None else {})[1][0]
         node_id = self.build_initial_xadd(xadd_as_list, to_canonical=to_canonical)
         return node_id
+
+    def get_graph(self, node_id: int, name: str = '') -> Graph:
+        """Creates a graph view of a given node"""
+        graph = Graph(
+            name=name, 
+            directed=True,
+        )
+        root = self.get_exist_node(node_id)
+        root.to_graph(graph, node_id)
+        return graph
+
+    def save_graph(self, node_id: int, file_name: str):
+        graph = self.get_graph(node_id)
+        graph.configure()
+        
+        f_dir = Path('./tmp')
+        f_dir.mkdir(exist_ok=True, parents=True)
+        if file_name.endswith('png'):
+            file_name = file_name.replace('png', 'pdf')
+        elif not file_name.endswith('pdf'):
+            file_name = file_name + '.pdf'
+        f_path = f_dir / file_name
+        
+        graph.draw(f_path, prog='dot')
 
 
 class NullDec:

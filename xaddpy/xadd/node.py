@@ -3,6 +3,8 @@ import sympy
 from sympy import oo
 import abc
 
+from xaddpy.utils.graph import Graph
+
 
 class Node(metaclass=abc.ABCMeta):
     def __init__(self, context):
@@ -55,6 +57,10 @@ class Node(metaclass=abc.ABCMeta):
     def high(self) -> int:
         pass
 
+    @abc.abstractmethod
+    def to_graph(self, graph: Graph, node_id: int):
+        pass
+    
 
 class XADDTNode(Node):
     def __init__(self, expr: sympy.Basic, annotation=None, context=None):
@@ -165,6 +171,18 @@ class XADDTNode(Node):
         else:
             return str_expr
 
+    def to_graph(self, graph: Graph, node_id: int):
+        this_node = str(node_id)
+        graph.add_node(this_node)
+        str_expr = f"( [{self.expr}] )"
+        if self._annotation is None:
+            graph.add_node_label(this_node, str_expr)
+        else:
+            graph.add_node_label(this_node, f"{str_expr}\n[ {self._annotation} ]")
+        graph.add_node_color(this_node, color='lightsalmon')
+        graph.add_node_shape(this_node, shape='box')
+        graph.add_node_style(this_node, style='filled')
+    
     @property
     def high(self) -> int:
         raise NotImplementedError
@@ -324,3 +342,28 @@ class XADDINode(Node):
             ret += "h:[None] "
         ret += ") "
         return ret
+
+    def to_graph(self, graph: Graph, node_id: int):
+        # Decision node
+        this_node = str(node_id)
+        graph.add_node(this_node)
+        dec_id = self.dec
+        dec_expr = self._context._id_to_expr[dec_id]
+        str_expr = str(dec_expr)
+        graph.add_node_label(this_node, str_expr)
+        graph.add_node_color(this_node, color='lightblue')
+        graph.add_node_shape(this_node, shape='ellipse')
+        graph.add_node_style(this_node, style='filled')
+
+        # Children
+        low: Node = self._context.get_exist_node(self.low)
+        if low is not None:
+            low_node = str(self.low)
+            graph.add_edge(this_node, low_node, color='black', style='dashed', label='')
+            low.to_graph(graph, self.low)
+        
+        high: Node = self._context.get_exist_node(self.high)
+        if high is not None:
+            high_node = str(self.high)
+            graph.add_edge(this_node, high_node, color='black', style='solid', label='')
+            high.to_graph(graph, self.high)
