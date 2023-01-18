@@ -1,9 +1,16 @@
+import warnings
 import sympy.core.relational as relational
 import sympy
 from sympy import oo
 import abc
 
-from xaddpy.utils.graph import Graph
+try:
+    from xaddpy.utils.graph import Graph
+except ImportError:
+    warnings.warn("[Module: xaddpy.xadd.node] Import error: pygraphviz not installed")
+    class Graph:
+        def __init__(self, *args, **kwargs):
+            pass
 
 
 class Node(metaclass=abc.ABCMeta):
@@ -303,21 +310,21 @@ class XADDINode(Node):
 
         # print node id
         if self._print_node_info:
-            ret += f" (dec, id): {self.dec}, {self._context._node_to_id.get(self)}"
+            ret += f" \t(dec, id): {self.dec}, {self._context._node_to_id.get(self)}"
 
         # Node level cache
         high = self._context._id_to_node.get(self._high, None)
         if high is not None:
-            ret += "\n" + "\t"*(level+1) + f" {high.__str__(level+1)} "
+            ret += "\n" + "\t"*(level+1) + f"{high.__str__(level+1)} "
         else:
             ret += "h:[None] "
 
         low = self._context._id_to_node.get(self._low, None)
         if low is not None:
-            ret += "\n" + "\t" * (level + 1) + f" {low.__str__(level + 1)} "
+            ret += "\n" + "\t" * (level + 1) + f"{low.__str__(level + 1)} "
         else:
             ret += "l:[None] "
-        ret += "\n) "
+        ret += "\n" + "\t" * level + ") "
         return ret
 
     def __repr__(self, level=0):
@@ -326,21 +333,21 @@ class XADDINode(Node):
 
         # print node id
         if self._print_node_info:
-            ret += f" (dec, id): {self.dec}, {self._context._node_to_id.get(self)}"
+            ret += f" \t(dec, id): {self.dec}, {self._context._node_to_id.get(self)}"
 
         # Node level cache
         high = self._context._id_to_node.get(self._high, None)
         if high is not None:
-            ret += "\n" + "\t"*(level+1) + f" {high.__str__(level+1)} "
+            ret += "\n" + "\t"*(level+1) + f"{high.__str__(level+1)} "
         else:
             ret += "h:[None] "
 
         low = self._context._id_to_node.get(self._low, None)
         if low is not None:
-            ret += "\n" + "\t" * (level + 1) + f" {low.__str__(level + 1)} "
+            ret += "\n" + "\t" * (level + 1) + f"{low.__str__(level + 1)} "
         else:
             ret += "h:[None] "
-        ret += "\n) "
+        ret += "\n" + "\t" * level + ") "
         return ret
 
     def to_graph(self, graph: Graph, node_id: int):

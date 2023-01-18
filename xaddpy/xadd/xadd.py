@@ -1,3 +1,4 @@
+import warnings
 from sympy.logic import boolalg
 import sympy
 import sympy.core.numbers as numbers
@@ -11,7 +12,11 @@ import xaddpy.utils.util
 try:
     from xaddpy.utils.graph import Graph
 except ImportError:
-    pass
+    warnings.warn("[Module: xaddpy.xadd.xadd] Import error: pygraphviz not installed")
+    class Graph:
+        def __init__(self, *args, **kwargs):
+            pass
+
 
 from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 from xaddpy.xadd.reduce_lp import ReduceLPContext
@@ -1687,14 +1692,18 @@ class XADD:
 
     def get_graph(self, node_id: int, name: str = '') -> Graph:
         """Creates a graph view of a given node"""
-        graph = Graph(
-            name=name, 
-            directed=True,
-        )
-        root = self.get_exist_node(node_id)
-        root.to_graph(graph, node_id)
-        return graph
-
+        try:
+            graph = Graph(
+                name=name, 
+                directed=True,
+            )
+            root = self.get_exist_node(node_id)
+            root.to_graph(graph, node_id)
+            return graph
+        except AttributeError:
+            warnings.warn("You need to install 'pygraphviz' to construct graph visualization")
+            raise Exception
+        
     def save_graph(self, node_id: int, file_name: str):
         graph = self.get_graph(node_id)
         graph.configure()
