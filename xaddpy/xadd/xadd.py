@@ -530,16 +530,18 @@ class XADD:
         return ret
 
     def apply(self, id1: int, id2: int, op: str, annotation=None) -> int:
-        """
-        Recursively apply op(node1, node2). 
-        op can be 
-                'min', 'max', 'sum', 'minus', 'prod', 'div' for non-Boolean operations
-            or  'or', 'and' for Boolean operations.
-        :param id1:
-        :param id2:
-        :param op:
-        :param annotation:          (tuple)
-        :return:
+        """Recursively apply op(node1, node2)
+
+        Args:
+            id1 (int): ID of the first node
+            id2 (int): ID of the second node
+            op (str): (str) 'max', 'min', 'add', 'subtract', 'prod', 'div' (non-Boolean)
+                                  'or', 'and' (Boolean)
+                                  '!=', '==', '>', '>=', '<', '<=' (Relational)
+            annotation (_type_, optional): _description_. Defaults to None.
+
+        Returns:
+            int: The resulting node ID
         """
         ret = self.apply_int(id1, id2, op, annotation)
         if op in ('min', 'max', '!=', '==', '>', '>=', '<', '<=', 'or', 'and'):
@@ -558,14 +560,18 @@ class XADD:
             return hm
 
     def apply_int(self, id1: int, id2: int, op: str, annotation=None) -> int:
-        """
-        Recursively apply op(node1, node2).
-        :param id1:         (int) index of node 1
-        :param id2:         (int) index of node 2
-        :param op:          (str) 'max', 'min', 'add', 'subtract', 'prod', 'div' (non-Boolean)
+        """Recursively apply op(node1, node2)
+
+        Args:
+            id1 (int): ID of the first node
+            id2 (int): ID of the second node
+            op (str): (str) 'max', 'min', 'add', 'subtract', 'prod', 'div' (non-Boolean)
                                   'or', 'and' (Boolean)
                                   '!=', '==', '>', '>=', '<', '<=' (Relational)
-        :return:
+            annotation (_type_, optional): _description_. Defaults to None.
+
+        Returns:
+            int: The resulting node ID
         """
         # Check apply cache and return if found
         if annotation is None:
@@ -627,17 +633,21 @@ class XADD:
 
     def compute_leaf_node(
             self, id1: int, n1: Node, id2: int, n2: Node, op: str, annotation: Union[tuple, None]
-    ):
-        """
-        :param id1:         (int)
-        :param n1:          (Node)
-        :param id2:         (int)
-        :param n2:          (Node)
-        :param op:          (str) 'max', 'min', 'add', 'subtract', 'prod', 'div' (non-Boolean)
+    ) -> Optional[int]:
+        """_summary_
+
+        Args:
+            id1 (int): ID of the first node
+            n1 (Node): The first node
+            id2 (int): ID of the second node
+            n2 (Node): The second node
+            op (str): 'max', 'min', 'add', 'subtract', 'prod', 'div' (non-Boolean)
                                   'or', 'and' (Boolean)
                                   '!=', '==', '>', '>=', '<', '<=' (Relational)
-        :param annotation:  (tuple)
-        :return:
+            annotation (Union[tuple, None]): _description_
+
+        Returns:
+            (Optional) int: None if not terminal nodes; integer ID if terminal nodes
         """
         assert op in {
             'max', 'min', 'add', 'prod', 'subtract', 'div', 

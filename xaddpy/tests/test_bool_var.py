@@ -1,7 +1,7 @@
 from pathlib import Path
 import sympy as sp
 
-from xaddpy.xadd.xadd import XADD
+from xaddpy import XADD
 
 
 def test_bvar_subs():

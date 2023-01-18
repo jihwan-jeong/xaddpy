@@ -317,7 +317,7 @@ class XADDINode(Node):
             ret += "\n" + "\t" * (level + 1) + f" {low.__str__(level + 1)} "
         else:
             ret += "l:[None] "
-        ret += ") "
+        ret += "\n) "
         return ret
 
     def __repr__(self, level=0):
@@ -340,7 +340,7 @@ class XADDINode(Node):
             ret += "\n" + "\t" * (level + 1) + f" {low.__str__(level + 1)} "
         else:
             ret += "h:[None] "
-        ret += ") "
+        ret += "\n) "
         return ret
 
     def to_graph(self, graph: Graph, node_id: int):
