@@ -201,7 +201,7 @@ You can also apply the following unary operators to a single XADD node recursive
 The `pow` operation requires an additional argument specifying the exponent.
 
 #### XADD.evaluate(node_id: int, bool_assign: dict, cont_assign: bool, primitive_type: bool)
-When you want to assign concrete values to booleand and continuous variables, you can use this method. An example is provided in the `test_mixed_eval` function defined in [xaddpy/tests/test_bool_var.py](xaddpy/tests/test_bool_var.py).
+When you want to assign concrete values to Boolean and continuous variables, you can use this method. An example is provided in the `test_mixed_eval` function defined in [xaddpy/tests/test_bool_var.py](xaddpy/tests/test_bool_var.py).
 
 As another example, let's say we want to evaluate the XADD node defined a few lines above.
 ```python
