@@ -20,7 +20,7 @@ pip install gurobipy    # If you have a license
 
 ## Using xaddpy
 
-You can find useful XADD usecases in the [xaddpy/tests/test_bool_var.py](xaddpy/tests/test_bool_var.py) and [xaddpy/tests/test_xadd.py](xaddpy/tests/test_xadd.py) files. Here, we will briefly show two main ways to build an initial XADD that you want to work with. 
+You can find useful XADD usecases in the [xaddpy/tests/test_bool_var.py](xaddpy/tests/test_bool_var.py) and [xaddpy/tests/test_xadd.py](xaddpy/tests/test_xadd.py) files. Here, we will first briefly discuss different ways to build an initial XADD that you want to work with. 
 
 ### Loading from a file
 
@@ -91,6 +91,187 @@ Comparison node:
 which is the expected outcome!
 
 Check out a much more comprehensive example demonstrating the recursive construction of a nontrivial XADD from here: [pyRDDLGym/XADD/RDDLModelXADD.py](https://github.com/ataitler/pyRDDLGym/blob/01955ee7bca2861124709c116f419f2927c04a89/pyRDDLGym/XADD/RDDLModelXADD.py#L124).
+
+### Directly creating an XADD node
+Finally, you might want to build a constant node, an arbitrary decision expression, and a Boolean decision directly. To this end, let's consider building the following XADD: 
+
+```
+([b]
+    ([1])
+    ([x + y <= 0]
+        ([0])
+        ([2])
+    )
+)
+```
+
+To do this, we will first create an internal node whose decision is `[x + y <= 0]`, the low   and the high branches are `[0]` and `[2]` (respectively). Using Sympy's `S` function (or you can use `sympify`), you can turn an algebraic expression involving variables and numerics into a symbolic expression. Given this decision expression, you can get its unique index using `XADD.get_dec_expr_index` method. You can use the decision ID along with the ID of the low and high nodes connected to the decision to create the corresponding decision node, using `XADD.get_internal_node`.
+
+```python
+import sympy as sp
+from xaddpy import XADD
+
+context = XADD()
+
+# Get the unique ID of the decision expression
+dec_expr: sp.Basic = sp.S('x + y <= 0')
+dec_id, is_reversed = context.get_dec_expr_index(dec_expr, create=True)
+
+# Get the IDs of the high and low branches: [0] and [2], respectively
+high: int = context.get_leaf_node(sp.S(0))
+low: int = context.get_leaf_node(sp.S(2))
+if is_reversed:
+    low, high = high, low
+
+# Create the decision node with the IDs
+dec_node_id: int = context.get_internal_node(dec_id, low=low, high=high)
+print(f"Node created:\n{context.get_repr(dec_node_id)}")
+```
+
+Note that `XADD.get_dec_expr_index` returns a boolean variable `is_reversed` which is `False` if the canonical decision expression of the given decision has the same inequality direction. If the direction has changed, then `is_reversed=True`; in this case, low and high branches should be swapped.
+
+Another way of creating this node is to use the `XADD.get_dec_node` method. This method can only be used when the low and high nodes are terminal nodes containing leaf expressions.
+
+```python
+dec_node_id = context.get_dec_node(dec_expr, low_val=sp.S(2), high_val=sp.S(0))
+```
+
+Note also that you need to wrap constants with the `sympy.S` function to turn them into `sympy.Basic` objects.
+
+Now, it remains to create a decision node with the Boolean variable `b` and connect it to its low and high branches. 
+
+```python
+b = sp.Symbol('b', bool=True)
+dec_b_id, _ = context.get_dec_expr_index(b, create=True)
+```
+
+First of all, you need to provide `bool=True` as a keyword argument when instantiating a Sympy `Symbol` corresponding to a Boolean variable. When you instantiate multiple Boolean variables, you can use `b1, b2, b3 = sp.symbols('b1 b2 b3', bool=True)`. If you didn't specify `bool=True`, then the variable won't be recognized as a Boolean variable in XADD operations!
+
+Once you have the decision ID, we can finally link this decision node with the node created earlier. 
+
+```python
+high: int = context.get_leaf_node(sp.S(1))
+node_id: int = context.get_internal_node(dec_b_id, low=dec_node_id, high=high)
+print(f"Node created:\n{context.get_repr(node_id)}")
+```
+And we get the following print outputs.
+```
+Output:
+Node created:
+( [b]   (dec, id): 2, 9
+        ( [1] ) node_id: 1 
+        ( [x + y <= 0]  (dec, id): 10001, 8
+                ( [0] ) node_id: 0 
+                ( [2] ) node_id: 7 
+        )  
+) 
+```
+
+### XADD Operations
+
+#### XADD.apply(id1: int, id2: int, op: str)
+You can perform the `apply` operation to two XADD nodes with IDs `id1` and `id2`. Below is the list of the supported operators (`op`):
+
+**Non-Boolean operations**
+- 'max'
+- 'min'
+- 'add'
+- 'subtract'
+- 'prod'
+- 'div'
+- 'or'
+- 'and'
+
+**Boolean operations**
+- 'and'
+- 'or'
+
+**Relational operations**
+- '!='
+- '=='
+- '>'
+- '>='
+- '<'
+- '<='
+
+#### XADD.unary_op(node_id: int, op: str) (unary operations)
+You can also apply the following unary operators to a single XADD node recursively. In this case, the operator will be applied to each and every leaf value of the given node. That is, the decision expressions will remain unchanged.
+
+- 'sin, 'cos', 'tan'
+- 'sinh', 'cosh', 'tanh'
+- 'exp', 'log', 'log2', 'log10', 'log1p'
+- 'floor', 'ceil'
+- 'sqrt', 'pow'
+- '-', '+'
+- 'sgn' (sign function... sgn(x) = 1 if x > 0; 0 if x == 0; -1 otherwise)
+- '~' (negation)
+
+The `pow` operation requires an additional argument specifying the exponent.
+
+#### XADD.evaluate(node_id: int, bool_assign: dict, cont_assign: bool, primitive_type: bool)
+When you want to assign concrete values to booleand and continuous variables, you can use this method. An example is provided in the `test_mixed_eval` function defined in [xaddpy/tests/test_bool_var.py](xaddpy/tests/test_bool_var.py).
+
+As another example, let's say we want to evaluate the XADD node defined a few lines above.
+```python
+x, y = sp.symbols('x y')
+
+bool_assign = {b: True}
+cont_assign = {x: 2, y: -1}
+
+res = context.evaluate(node_id, bool_assign=bool_assign, cont_assign=cont_assign)
+print(f"Result: {res}")
+```
+
+In this case, `b=True` will directly leads to the leaf value of `1` regardless of the assignment given to `x` and `y` variables. 
+
+```python
+bool_assign = {b: False}
+res = context.evaluate(node_id, bool_assign=bool_assign, cont_assign=cont_assign)
+print(f"Result: {res}")
+```
+
+If we change the value of `b`, we can see that we get `2`. Note that you have to make sure that all symbolic variables get assigned specific values; otherwise, the function will return `None`. 
+
+#### XADD.substitute(node_id: int, subst_dict: dict)
+If instead you want to assign values to a subset of symbolic variables while leaving the other variables as-is, you can use the `substitute` method. Similar to `evaluate`, you need to pass in a dictionary mapping Sympy `Symbol`s to their concrete values.
+
+For example,
+
+```python
+subst_dict = {x: 1}
+node_id_after_subs = context.substitute(node_id, subst_dict)
+print(f"Result:\n{context.get_repr(node_id_after_subs)}")
+```
+which outputs
+```
+Result:
+( [b]   (dec, id): 2, 16
+        ( [1] ) node_id: 1 
+        ( [y + 1 <= 0]  (dec, id): 10003, 12
+                ( [0] ) node_id: 0 
+                ( [2] ) node_id: 7 
+        )  
+) 
+```
+as expected. 
+
+#### XADD.collect_vars(node_id: int)
+If you want to extract all Boolean and continuous Sympy variables existing in an XADD node, you can use this method.
+
+```python
+var_set = context.collect_vars(node_id)
+print(f"var_set: {var_set}")
+```
+```
+Output:
+var_set: {y, b, x}
+```
+
+This method can be useful to figure out which variables need to have values assigned in order to evaluate a given XADD node.
+
+#### XADD.make_canonical(node_id: int)
+This method gives a canonical order to an XADD that is potentially unordered. Note that the `apply` method already calls `make_canonical` when the `op` is one of `('min', 'max', '!=', '==', '>', '>=', '<', '<=', 'or', 'and')`.
+
 
 ## Citation
 
