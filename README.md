@@ -173,29 +173,21 @@ Node created:
 You can perform the `apply` operation to two XADD nodes with IDs `id1` and `id2`. Below is the list of the supported operators (`op`):
 
 **Non-Boolean operations**
-- 'max'
-- 'min'
-- 'add'
-- 'subtract'
-- 'prod'
-- 'div'
-- 'or'
-- 'and'
+- 'max', 'min'
+- 'add', 'subtract'
+- 'prod', 'div'
 
 **Boolean operations**
 - 'and'
 - 'or'
 
 **Relational operations**
-- '!='
-- '=='
-- '>'
-- '>='
-- '<'
-- '<='
+- '!=', '=='
+- '>', '>='
+- '<', '<='
 
 #### XADD.unary_op(node_id: int, op: str) (unary operations)
-You can also apply the following unary operators to a single XADD node recursively. In this case, the operator will be applied to each and every leaf value of the given node. That is, the decision expressions will remain unchanged.
+You can also apply the following unary operators to a single XADD node recursively (also check `UNARY_OP` in [xaddpy/utils/global_vars.py](xaddpy/utils/global_vars.py)). In this case, an operator will be applied to each and every leaf value of a given node. Hence, the decision expressions will remain unchanged.
 
 - 'sin, 'cos', 'tan'
 - 'sinh', 'cosh', 'tanh'
