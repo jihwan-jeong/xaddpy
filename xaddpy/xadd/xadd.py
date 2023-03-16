@@ -479,6 +479,8 @@ class XADD:
                     return self.get_leaf_node(expr, node._annotation)
                 else:
                     return self.get_dec_node(expr, sympy.false, sympy.true)
+            elif op == 'abs' and not isinstance(expr, numbers.Number):
+                return self.abs_op(node_id)
             
             sp_op = UNARY_OP.get(op, None)
             if sp_op is None:
@@ -498,6 +500,37 @@ class XADD:
         # TODO: do we need to cache the result?
         return ret
 
+    def abs_op(self, node_id: int) -> int:
+        """Implements the absolute value function.
+        That is,
+
+        abs(x) = x if x >= 0
+                 -x otherwise
+
+        In XADD, this is equivalent to
+            ([x >= 0]
+                ([x])
+                ([-x])
+            )
+        """
+        node = self.get_exist_node(node_id)
+        assert node.is_leaf()
+        
+        node = cast(XADDTNode, node)
+        expr = node.expr
+        
+        dec_expr = expr >= 0
+        dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
+        low =  self.unary_op(node_id, '-')
+        high = node_id
+
+        if is_reversed:
+            low, high = high, low
+        
+        ret = self.get_internal_node(dec, low, high)
+        ret = self.make_canonical(ret)
+        return ret
+    
     def sgn_op(self, node_id: int) -> int:
         """Implements the sign function...
         That is,
