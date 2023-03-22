@@ -567,6 +567,10 @@ class XADD:
         ret = self.make_canonical(ret)
         return ret
 
+    def scalar_op(self, node_id: int, val: float, op: str) -> int:
+        scalar_node = self.get_leaf_node(val)
+        return self.apply(node_id, scalar_node, op)
+
     def apply(self, id1: int, id2: int, op: str, annotation=None) -> int:
         """Recursively apply op(node1, node2)
 
