@@ -138,6 +138,10 @@ class XADD:
         # Other attributes
         self._args: dict = args
 
+        # Related to MILP compilation
+        self._obj = None
+        self._additive_obj = False
+
     def set_variable_ordering_func(self, func: Callable):
         XADD._func_var_index = func
     
@@ -1167,7 +1171,11 @@ class XADD:
         return self._id_to_node[node_id]
 
     def min_or_max_multi_var(
-            self, node_id: int, var_lst: List[sympy.Symbol], is_min: bool = True, annotate: bool = True,
+            self,
+            node_id: int,
+            var_lst: List[sympy.Symbol],
+            is_min: bool = True,
+            annotate: bool = True,
     ):
         """
         Given an XADD root node 'node_id', minimize (or maximize) variables in 'var_lst'.
@@ -1607,6 +1615,17 @@ class XADD:
         return self.RLPContext.reduce_lp(node_id)
 
     """
+    Related to MILP compilation of XADD
+    """
+    def set_objective(self, obj: Union[int, dict]):
+        self._obj = obj
+        if isinstance(obj, dict):
+            self._additive_obj = True
+    
+    def get_objective(self):
+        return self._obj
+    
+    """
     Cache maintenance
     """
     def clear_special_nodes(self):
@@ -1680,7 +1699,9 @@ class XADD:
     """
     Export and import XADDs
     """
-    def export_xadd(self, node_id: int, fname: str, append: bool = False):
+    def export_xadd(
+            self, node_id: int, fname: str, append: bool = False, include_node_info: bool = False
+    ):
         """
         Export the XADD node to a file.
         If append is True, then open the file in the append mode.
@@ -1689,7 +1710,8 @@ class XADD:
         node: Node = self._id_to_node.get(node_id, None)
         if node is None:
             raise KeyError(f'There is no node with id {node_id}')
-        node.turn_off_print_node_info()
+        if not include_node_info:
+            node.turn_off_print_node_info()
 
         if append:
             with open(fname, 'a+') as f:
@@ -1727,6 +1749,9 @@ class XADD:
         node_id = self.build_initial_xadd(xadd_as_list, to_canonical=to_canonical)
         return node_id
 
+    """
+    Graph visualization
+    """
     def get_graph(self, node_id: int, name: str = '') -> Graph:
         """Creates a graph view of a given node"""
         try:
@@ -1933,12 +1958,16 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
         xadd_lower_bound = -1
         for e in lower_bound:
             xadd_lower_bound = self._context.get_leaf_node(e) if xadd_lower_bound == -1 \
-                               else self._context.apply(xadd_lower_bound, self._context.get_leaf_node(e), op='max')
+                                else self._context.apply(xadd_lower_bound,
+                                                         self._context.get_leaf_node(e),
+                                                         op='max')
 
         xadd_upper_bound = -1
         for e in upper_bound:
             xadd_upper_bound = self._context.get_leaf_node(e) if xadd_upper_bound == -1 \
-                else self._context.apply(xadd_upper_bound, self._context.get_leaf_node(e), op='min')
+                                else self._context.apply(xadd_upper_bound,
+                                                         self._context.get_leaf_node(e),
+                                                         op='min')
 
         # Reduce lower and upper bound xadds for potential computational gains
         xadd_lower_bound = self._context.reduce_lp(xadd_lower_bound)
@@ -1955,8 +1984,12 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                 assert isinstance(comp, relational.GreaterThan)
 
         # Substitute lower and upper bounds into leaf node
-        eval_lower = self._context.substitute_xadd_for_var_in_expr(leaf_val, var=self._var, xadd=xadd_lower_bound)
-        eval_upper = self._context.substitute_xadd_for_var_in_expr(leaf_val, var=self._var, xadd=xadd_upper_bound)
+        eval_lower = self._context.substitute_xadd_for_var_in_expr(leaf_val,
+                                                                   var=self._var,
+                                                                   xadd=xadd_lower_bound)
+        eval_upper = self._context.substitute_xadd_for_var_in_expr(leaf_val,
+                                                                   var=self._var,
+                                                                   xadd=xadd_upper_bound)
 
         # Take casemin / casemax of eval_lower and eval_upper
         """
@@ -1988,12 +2021,21 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                 min_max_eval = eval_lower
             else:
                 dec, is_reversed = self._context.get_dec_expr_index(dec_expr, create=True)
-                ind_true = self._context.get_internal_node(dec, self._context.ZERO, self._context.ONE)      # Note: need to use ZERO_ig for annotating purpose... 
-                ind_false = self._context.get_internal_node(dec, self._context.ONE, self._context.ZERO)     # but this is skipped in this branch
-                upper_half = self._context.apply(ind_true if not is_reversed else ind_false, eval_upper, 'prod')
-                lower_half = self._context.apply(ind_false if not is_reversed else ind_true, eval_lower, 'prod')
+                ind_true = self._context.get_internal_node(dec,
+                                                           self._context.ZERO,
+                                                           self._context.ONE)      # Note: need to use ZERO_ig for annotating purpose... 
+                ind_false = self._context.get_internal_node(dec,                   # but this is skipped in this branch
+                                                            self._context.ONE,
+                                                            self._context.ZERO) 
+                upper_half = self._context.apply(ind_true if not is_reversed else ind_false,
+                                                 eval_upper,
+                                                 'prod')
+                lower_half = self._context.apply(ind_false if not is_reversed else ind_true,
+                                                 eval_lower,
+                                                 'prod')
                 min_max_eval = self._context.apply(upper_half, lower_half, 'add',
-                                                   annotation=(xadd_upper_bound, xadd_lower_bound) if self._annotate else None)
+                                                   annotation=(xadd_upper_bound, xadd_lower_bound) 
+                                                        if self._annotate else None)
                 min_max_eval = self._context.make_canonical(min_max_eval)
         else:
             # Note: always 1st argument should be upper bound, while 2nd argument is lower bound
@@ -2033,7 +2075,10 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                 annotate=self._annotate,
             )
             decisions, decision_values = [], []
-            _ = self._context.reduce_process_xadd_leaf(min_max_eval, min_or_max, decisions, decision_values)
+            _ = self._context.reduce_process_xadd_leaf(min_max_eval,
+                                                       min_or_max,
+                                                       decisions,
+                                                       decision_values)
             min_max_eval = min_or_max._running_result
 
         if self._running_result == -1:

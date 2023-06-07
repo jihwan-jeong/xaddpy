@@ -6,11 +6,9 @@ from os import path
 def set_log_file_path(args):
     dir_path = path.join(args.results_dir, 'logs')
     os.makedirs(dir_path, exist_ok=True)
-    fname = f'{args.model_name}_{args.date_time}.log'
 
     # log will not be overwritten due to the time stamp
-    if '.log' not in fname:
-        fname = fname + '.log'
+    fname = f'{args.model_name}_{args.date_time}.log'
 
     # Remove previously added file handlers
     for hdlr in logger.handlers[:]:

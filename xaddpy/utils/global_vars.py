@@ -1,6 +1,6 @@
-import sympy.core.relational as relational
 import sympy
-from sympy.codegen.rewriting import optims_c99, optimize
+import sympy.core.relational as relational
+from sympy.codegen.rewriting import optimize, optims_c99
 
 
 def log1p(x: sympy.Basic):
@@ -30,3 +30,12 @@ TIMEOUT = 200
 TIME_INTERVAL = 10
 MIPGap = 5e-3
 ACCEPTED_RV_TYPES = {'UNIFORM', 'NORMAL'}
+
+try:
+    import gurobipy
+    from gurobipy import GRB
+    LP_BACKEND = 'gurobi'
+    REL_REVERSED_GUROBI = {GRB.GREATER_EQUAL: GRB.LESS_EQUAL, GRB.LESS_EQUAL: GRB.GREATER_EQUAL}
+except:
+    LP_BACKEND = 'pulp'
+    REL_REVERSED_GUROBI = {}

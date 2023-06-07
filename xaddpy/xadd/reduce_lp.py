@@ -1,20 +1,14 @@
-try:
-    import gurobipy
-    LP_BACKEND = 'gurobi'
-except:
-    LP_BACKEND = 'pulp'
-
-import pulp as pl
 from typing import Optional, cast
+
+import psutil
+import pulp as pl
 import sympy as sp
 import sympy.core.relational as relational
 
-from xaddpy.utils.global_vars import REL_TYPE, REL_NEGATED
+from xaddpy.utils.global_vars import LP_BACKEND, REL_NEGATED, REL_TYPE
 from xaddpy.utils.logger import logger
 from xaddpy.utils.lp_util import Model, convert_to_pulp_expr
 from xaddpy.xadd.node import Node, XADDINode, XADDTNode
-import psutil
-
 
 default_check_redundancy = True
 
