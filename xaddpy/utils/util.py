@@ -1,22 +1,25 @@
-from typing import Union, Dict, Optional, List, Tuple
+import pickle
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Union
 
-from sympy import sympify, collect
-from sympy.solvers import solveset
+import numpy as np
+import sympy
 import sympy.core.relational as relational
+from sympy import collect, sympify
 from sympy.logic.boolalg import Boolean
 from sympy.matrices import Matrix
-import sympy
-
-import pickle
-import numpy as np
-from datetime import datetime
+from sympy.solvers import solveset
 
 try:
     from gurobipy import GRB
+    relConverter = {relational.GreaterThan: GRB.GREATER_EQUAL, relational.StrictGreaterThan: GRB.GREATER_EQUAL,
+                relational.LessThan: GRB.LESS_EQUAL, relational.StrictLessThan: GRB.LESS_EQUAL,
+                relational.Eq: GRB.EQUAL}
 except:
+    relConverter = None
     pass
 
-from xaddpy.utils.global_vars import REL_TYPE, REL_REVERSED
+from xaddpy.utils.global_vars import REL_REVERSED, REL_TYPE
 
 typeConverter = {sympy.Integer: int, sympy.Float: float, sympy.core.numbers.Zero: int, sympy.core.numbers.NegativeOne: int,
                  sympy.core.numbers.One: int, sympy.core.numbers.Rational: float, sympy.core.numbers.Half: float,
