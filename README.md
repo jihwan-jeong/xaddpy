@@ -4,7 +4,10 @@ This repository implements the Python version of XADD (eXtended Algebraic Decisi
 
 Our Python XADD code uses [Sympy](https://github.com/sympy/sympy) for symbolically maintaining all variables and related operations, and [PULP](https://github.com/coin-or/pulp) is used for pruning unreachable paths.  Note that we only check linear conditionals.  If you have Gurobi installed and configured in the conda environment, then PULP will use Gurobi for solving (MI)LPs; otherwise, the default solver ([CBC](https://github.com/coin-or/Cbc)) is going to be used.
 
-Note that the implementation for [EMSPO](https://proceedings.mlr.press/v162/jeong22a/jeong22a.pdf) --- Exact symbolic reduction of linear Smart Predict+Optimize to MILP (Jeong et al., ICML-22) --- has been moved to the branch [emspo](https://github.com/jihwan-jeong/xaddpy/tree/emspo). 
+Note that the implementation for [EMSPO](https://proceedings.mlr.press/v162/jeong22a/jeong22a.pdf) --- Exact symbolic reduction of linear Smart Predict+Optimize to MILP (Jeong et al., ICML-22) --- has been moved to the branch [emspo](https://github.com/jihwan-jeong/xaddpy/tree/emspo).
+
+You can find the implementation for the [CPAIOR-23](https://ssanner.github.io/papers/cpaior23_dblpsve.pdf) work --- A Mixed-Integer Linear Programming Reduction of Disjoint Bilinear Programs via Symbolic
+Variable Elimination --- in [examples/dblp](examples/dblp).
 
 ## Installation
 
