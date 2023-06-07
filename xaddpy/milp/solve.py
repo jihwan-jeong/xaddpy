@@ -42,7 +42,7 @@ def solve_milp(
     # Set some parameters & attributes of the MILP model
     m.setAttr('_time_interval', time_interval)
     m.setParam('TimeLimit', timeout)
-    if verbose:
+    if verbose or args.verbose:
         log_file = f"{args.log_dir}/{args.model_name}_{args.date_time}_solver.log"
         logger.info(f"MILP solver outputs will be saved in {log_file}")
         log_dir = path.join(path.curdir, log_file)
@@ -62,18 +62,20 @@ def solve_milp(
     etime = time.time()
     time_milp = etime - stime
 
-    if verbose:
-        if status != pl.LpStatusInfeasible:
-            for v in m.getVars():
-                name, val = v.name, v.value()
-                assert val is not None
+    info = {}
+    if status != pl.LpStatusInfeasible:
+        for v in m.getVars():
+            name, val = v.name, v.value()
+            assert val is not None
+            if verbose or args.verbose:
                 logger.info(f"{name} {val}")
+            info[name] = val   
     
-    info = dict(
+    info.update(dict(
         time_modeling=time_modeling,
         time_milp=time_milp,
         obj_value=obj_val,
-    )
+    ))
     return info
 
 

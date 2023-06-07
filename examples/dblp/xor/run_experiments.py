@@ -98,27 +98,25 @@ def run_instance(args):
             
             # Run experiments
             context = XADD(vars(args))
-            g_model, num_int_nodes, num_term_nodes, obj_value, time_symb, time_modeling, time_milp = \
-                solve_dblp_with_xor(
-                    context=context,
-                    n=n,
-                    ny=ny,
-                    seed=s,
-                    model_name=model_name,
-                    args=args,
-                )
+            g_model, info_dict = solve_dblp_with_xor(context=context,
+                                                     n=n,
+                                                     ny=ny,
+                                                     seed=s,
+                                                     model_name=model_name,
+                                                     args=args)
 
             num_cvars_milp, num_bvars_milp, num_constrs_milp = return_model_info(g_model)
-
-            t_symb_lst.append(time_symb)
-            t_milp_lst.append(time_milp)
-            t_model_lst.append(time_modeling)
-            n_int_nodes_lst.append(num_int_nodes)
-            n_term_nodes_lst.append(num_term_nodes)
+            
+            t_symb_lst.append(info_dict['time_symb'])
+            t_milp_lst.append(info_dict['time_milp'])
+            t_model_lst.append(info_dict['time_modeling'])
             n_cvar_milp_lst.append(num_cvars_milp)
             n_bvar_milp_lst.append(num_bvars_milp)
             n_constr_lst.append(num_constrs_milp)
-            obj_val_lst.append(obj_value)
+            obj_val_lst.append(info_dict['obj_value'])
+            
+            if args.verbose:
+                logger.info(f"")
 
         # Write results on the file (one line per one `n' and multiple seeds)
         results_dir = args.results_dir
@@ -167,7 +165,7 @@ if __name__ == '__main__':
     parser.add_argument('--ny', dest='ny', type=int, default=None)
     parser.add_argument('--n_constrs_y', dest='n_constrs_y', type=int, default=15,
                         help='The number of linear constraints over y')
-    parser.add_argument('--n_ri_per_z', dest='n_ri_per_z', type=int, default=2,
+    parser.add_argument('--n_ri_per_z', dest='n_ri_per_z', type=int, default=-1,
                         help='The number of buckets linked by a single z variable')
     parser.add_argument('--max_n', dest='max_n', type=int, default=1,
                         help="The maximum number value for n upto which we iterate")

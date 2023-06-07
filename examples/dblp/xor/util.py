@@ -63,11 +63,11 @@ def solve_dblp_with_xor(
         model_name,
         dblp
     )
-    obj_value, time_milp, time_modeling = info_dict['obj_value'], info_dict['time_milp'], info_dict['time_modeling']
-    logger.info(f'Time taken for Gurobi to solve the MILP: {time_milp:.5f}\tObjective: {obj_value:.5f}')
-
-    # return g_model, num_int_nodes, num_term_nodes, obj_value, time_symb, time_modeling, time_milp
-    return m, 0, 0, obj_value, time_symb, time_modeling, time_milp
+    info_dict['time_symb'] = time_symb
+    logger.info(f'Time taken for Gurobi to solve the MILP: '
+                f'{info_dict["time_milp"]:.5f}\tObjective: {info_dict["obj_value"]:.5f}')
+    
+    return m, info_dict
 
 
 def create_xor_dblp_and_eliminate_xs(
@@ -197,10 +197,7 @@ def setup_context_and_decision_vars(
         lb, ub = sp.S(lb), sp.S(ub)
         bound_dict[ns[str(dec_vars[i])]] = (lb, ub)
 
-    # context.update_decision_vars(bvariables=[],
-    #                              cvariables0=xs,
-    #                              cvariables1=ys,
-    #                              min_var_set_id=0)
+    context.update_decision_vars(min_var_set=set(xs), free_var_set=set(ys))
     context.update_bounds(bound_dict)
     context.update_name_space(ns)
     xs = {i: xs[i - 1] for i in range(1, len(xs) + 1)}

@@ -13,6 +13,7 @@ class XADD(_XADD):
     def __init__(self, args: dict = ...):
         super().__init__(args)
         self._config_json_fname = None
+        self._num_decision_vars = 0
         self._feature_dim = None        # for EMSPO
         self._param_dim: int = None
         
@@ -24,6 +25,14 @@ class XADD(_XADD):
     
     def set_param_dim(self, dim):
         self._param_dim = dim
+    
+    def update_decision_vars(self, min_var_set, free_var_set):
+        """Note: does not support binary variables"""
+        variables = min_var_set.union(free_var_set)
+        self._decisionVars = variables
+        self._num_decision_vars = len(variables)
+        self._min_var_set.update(min_var_set)
+        self._free_var_set.update(free_var_set)
     
     """
     Export and import XADDs for MILP problems.

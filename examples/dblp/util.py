@@ -84,7 +84,7 @@ def generate_dblp_instance(
         k2,
         transform=True,
         seed=0,
-):
+) -> Tuple[tuple, dict]:
     """
     This function follows the test problem generation steps given in
         "Generation of Disjointly Constrained Bilinear Programming Test Problems", Vincente et al. (1992)
@@ -220,9 +220,10 @@ def create_prob_json(
         fname=None,
 ):
     """
-    Create a .json file of a DBLP problem instance. The generated file is to be read by xadd_parse_utils.py.
+    Create a .json file of a DBLP problem instance.
     """
     ineq_constr = []
+    # Vincente et al. (1992)
     if cfg is not None:
         k11, k12, k13, k1, k2 = cfg
         nx, ny = 2 * k2, k1 + k2
@@ -238,6 +239,7 @@ def create_prob_json(
             seed=seed,
             transform=transform,
         )
+    # Randomized problems with varying density
     else:
         assert density is not None
         if fname is None:
@@ -288,16 +290,21 @@ def create_prob_json(
     else:
         config['min-values'] = [0] * (nx + ny)
         config['max-values'] = [prob_info.get('ub', 20)] * (nx + ny)
-
+    
+    # Add additional info
+    config['optimal-objective'] = prob_info.get('obj_val', None)
+    
     with open(fname, 'w') as fjson:
         json.dump(config, fjson, indent=4)
 
     return fname
 
 
-def generate_rand_dblp_instances(density, seed, nx=8, ny=4, nA=15, nB=15):
-    # A DBLP can be specified by c, d, Q, A, B, a, b. Additionally, to make the problem bounded always, place lower (0)
-    # and upper bounds on variables (50)
+def generate_rand_dblp_instances(
+        density, seed, nx=8, ny=4, nA=15, nB=15
+) -> Tuple[tuple, dict]:
+    # A DBLP can be specified by c, d, Q, A, B, a, b. 
+    # Additionally, to make the problem bounded always, place lower (0) and upper bounds (50) on variables.
     # `density` can change from 0 to 1
     # With the generated instance, check whether the problem is feasible using Gurobi.
 
@@ -315,6 +322,10 @@ def generate_rand_dblp_instances(density, seed, nx=8, ny=4, nA=15, nB=15):
     rv_obj.random_state = rng
     rv = rv_obj.rvs
 
+
+    logger.info("Generating randomized DBLP instances and check for feasibility")
+    logger.info(f"Density: {density}, nx: {nx}, ny: {ny}, nA: {nA}, nB: {nB}, seed: {seed}")
+    
     # Objective coefficients
     c, d = tuple(map(lambda n: rv(n), [nx, ny]))
     # Generate Q: ensure at least one of Q is non-zero
@@ -350,7 +361,7 @@ def generate_rand_dblp_instances(density, seed, nx=8, ny=4, nA=15, nB=15):
     status = False
     xs = model.addVars(range(nx), lb=0, ub=ub, vtype=GRB.CONTINUOUS, name='x')
     ys = model.addVars(range(ny), lb=0, ub=ub, vtype=GRB.CONTINUOUS, name='y')
-
+    
     while True:
         # Generate A
         a = rv(nA)
@@ -385,8 +396,20 @@ def generate_rand_dblp_instances(density, seed, nx=8, ny=4, nA=15, nB=15):
         model.optimize()
         status = model.status
         if status == GRB.OPTIMAL:
+            obj = quicksum(c[i] * xs[i] for i in range(len(xs)))
+            obj += quicksum(Q[i, j] * xs[i] * ys[j] for i in range(len(xs)) for j in range(len(ys)))
+            obj += quicksum(d[i] * ys[i] for i in range(len(ys)))
+            model.setObjective(obj)
+            model.setParam('NonConvex', 2)
+            model.update()
+            model.optimize()
+            assert model.status == GRB.OPTIMAL
+            obj_val = model.objVal
+            
+            # Test for slack value
             pass_slack_test = test_slack(A, a, B, b)
             if pass_slack_test:
+                logger.info(f"Feasible instance generated: optimal objective: {obj_val}")
                 break
 
     # Make all elements Sympy objects
@@ -394,7 +417,7 @@ def generate_rand_dblp_instances(density, seed, nx=8, ny=4, nA=15, nB=15):
         lambda arr: sp.Matrix(arr), [Q, A, B, c, d, a, b]
     ))
 
-    prob_info = {'ub': ub}
+    prob_info = {'ub': ub, 'obj_val': obj_val}
 
     return (c, d, Q, A, a, B, b), prob_info
 
