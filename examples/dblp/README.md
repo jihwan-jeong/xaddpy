@@ -1,12 +1,10 @@
 # A Mixed-Integer Linear Programming Reduction of Disjoint Bilinear Programs via Symbolic Variable Elimination (CPAIOR-23)
 
-Welcome to our research codebase! This repository hosts our work presented at CPAIOR-23, where we ventured into an innovative use of Symbolic Variable Elimination (SVE) in conjunction with Extended Algebraic Decision Diagrams (XADDs). The novelty lies in transforming Disjointly Constrained Bilinear Programming (DBLP) problems into Mixed Integer Linear Programming (MILP) problems.
+Welcome to our research codebase! This repository is associated with [our work presented at CPAIOR-23](https://ssanner.github.io/papers/cpaior23_dblpsve.pdf), wherein we introduce a novel approach for converting Disjointly Constrained Bilinear Programming (DBLP) problems into Mixed Integer Linear Programming (MILP) problems. This transformative approach utilizes symbolic tools like Extended Algebraic Decision Diagrams (XADDs), marking us as the first to perform such a constructive conversion.
 
-What sets our work apart is its pioneering nature - we're the first to provide a constructive conversion of DBLPs into MILPs. At the heart of this conversion is the utilization of symbolic tools, notably XADDs. Our approach hints at a wider application of this concept, suggesting the potential for transforming other optimization problems in a similar fashion, thereby presenting a compelling toolset for mathematical optimization.
+While our focus is on DBLPs, the methodologies we've developed potentially extend to other optimization problems as well. In this work, we have found that the MILP reduction is particularly useful for problems that involve complex logical constraints, where XADDs can compactly represent those constraints and be manipulated to provide much more efficient solution.
 
-One particularly exciting facet of our research is its implications for DBLPs that feature intricate logical constraints. XADDs demonstrate their potential in these scenarios by representing these complex constraints in a compact manner, providing efficiency improvements in certain cases. Yet, it's crucial to acknowledge the broader context in which our work sits - the vast and intricate field of optimization problem-solving, where formidable solvers like Gurobi have an essential role.
-
-We invite you to delve into our repository, to unravel the intricacies, and to join us on this intriguing journey into the realm of mathematical programming using symbolic tools. Our contributions mark a step towards better understanding and manipulating these intricate problems, setting the stage for future explorations and breakthroughs in this domain.
+We encourage you to explore this repository, understand our methods, and see the potential that symbolic tools bring to mathematical programming. This is a stepping stone towards a more nuanced understanding and handling of complex optimization problems, and we hope it spurs further innovation in this field.
 
 ## Running experiments
 
