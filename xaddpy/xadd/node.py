@@ -31,17 +31,8 @@ class Node(metaclass=abc.ABCMeta):
     def turn_on_print_node_info(self):
         pass        
 
-    def collect_vars(self) -> set:
-        """
-        :param var_set:        (set)
-        :return:
-        """
-        var_set = set()
-        self.collect_vars_(var_set)
-        return var_set
-    
     @abc.abstractmethod
-    def collect_vars_(self, var_set):
+    def collect_vars(self):
         pass
 
     def collect_nodes(self, nodes=None):
@@ -122,11 +113,11 @@ class XADDTNode(Node):
     def _annotation(self, annotation):
         self.__annotation = annotation
 
-    def collect_vars_(self, var_set: set):
+    def collect_vars(self):
         """
         Updates the set containing all sympy Symbols.
         """
-        var_set.update(self.expr.free_symbols)
+        return self.expr.free_symbols.copy()
 
     def collect_nodes(self, nodes=None):
         if nodes is not None:
@@ -215,33 +206,33 @@ class XADDINode(Node):
         super().__init__(context)
 
         self.dec = dec
-        self._low = low
-        self._high = high
+        self.low = low
+        self.high = high
 
     def turn_off_print_node_info(self):
         self._print_node_info = False
-        high = self._context._id_to_node.get(self._high, None)
+        high = self._context._id_to_node.get(self.high, None)
         if high is not None:
             high.turn_off_print_node_info()
 
-        low = self._context._id_to_node.get(self._low, None)
+        low = self._context._id_to_node.get(self.low, None)
         if low is not None:
             low.turn_off_print_node_info()
 
     def turn_on_print_node_info(self):
         self._print_node_info = True
-        high = self._context._id_to_node.get(self._high, None)
+        high = self._context._id_to_node.get(self.high, None)
         if high is not None:
             high.turn_on_print_node_info()
 
-        low = self._context._id_to_node.get(self._low, None)
+        low = self._context._id_to_node.get(self.low, None)
         if low is not None:
             low.turn_on_print_node_info()
 
     def set(self, dec_id, low, high):
         self.dec = dec_id
-        self._low = low
-        self._high = high
+        self.low = low
+        self.high = high
 
     @property
     def dec(self):
@@ -275,32 +266,34 @@ class XADDINode(Node):
         self._context.get_exist_node(self._low).collect_nodes(nodes)
         self._context.get_exist_node(self._high).collect_nodes(nodes)
 
-    def collect_vars_(self, var_set: set):
+    def collect_vars(self):
         # Check cache
-        vars2 = self._inode_to_vars.get(self, None)
-        if vars2 is not None:
-            var_set.update(vars2)
-            return
+        var_set = self._inode_to_vars.get((self.dec, self.low, self.high), None)
+        if var_set is not None:
+            return var_set.copy()
 
-        low = self._context.get_exist_node(self._low)
-        high = self._context.get_exist_node(self._high)
-        low.collect_vars_(var_set)
-        high.collect_vars_(var_set)
+        var_set = set()
+        low = self._context.get_exist_node(self.low)
+        high = self._context.get_exist_node(self.high)
+        low_vars = low.collect_vars()
+        high_vars = high.collect_vars()
         expr = self._context._id_to_expr[self.dec]
         var_set.update(expr.free_symbols)
+        var_set.update(low_vars)
+        var_set.update(high_vars)
 
-        self._inode_to_vars[self] = var_set.copy()
-        
+        self._inode_to_vars[(self.dec, self.low, self.high)] = var_set.copy()
+        return var_set.copy()
 
     def __hash__(self):
         """
         Note that the terminal node and internal node are used differently in comparing keys in dictionary.
         """
-        return hash((self.dec, self._low, self._high))
+        return hash((self.dec, self.low, self.high))
 
     def __eq__(self, other):
         if isinstance(other, XADDINode):
-            return (self.dec == other.dec) and (self._low == other._low) and (self._high == other._high)
+            return (self.dec == other.dec) and (self.low == other.low) and (self.high == other.high)
         else:
             return False
 
@@ -313,13 +306,13 @@ class XADDINode(Node):
             ret += f" \t(dec, id): {self.dec}, {self._context._node_to_id.get(self)}"
 
         # Node level cache
-        high = self._context._id_to_node.get(self._high, None)
+        high = self._context._id_to_node.get(self.high, None)
         if high is not None:
             ret += "\n" + "\t"*(level+1) + f"{high.__str__(level+1)} "
         else:
             ret += "h:[None] "
 
-        low = self._context._id_to_node.get(self._low, None)
+        low = self._context._id_to_node.get(self.low, None)
         if low is not None:
             ret += "\n" + "\t" * (level + 1) + f"{low.__str__(level + 1)} "
         else:
@@ -336,13 +329,13 @@ class XADDINode(Node):
             ret += f" \t(dec, id): {self.dec}, {self._context._node_to_id.get(self)}"
 
         # Node level cache
-        high = self._context._id_to_node.get(self._high, None)
+        high = self._context._id_to_node.get(self.high, None)
         if high is not None:
             ret += "\n" + "\t"*(level+1) + f"{high.__str__(level+1)} "
         else:
             ret += "h:[None] "
 
-        low = self._context._id_to_node.get(self._low, None)
+        low = self._context._id_to_node.get(self.low, None)
         if low is not None:
             ret += "\n" + "\t" * (level + 1) + f"{low.__str__(level + 1)} "
         else:

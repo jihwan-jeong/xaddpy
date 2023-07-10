@@ -1051,9 +1051,9 @@ class XADD:
         assert all(
                     map(lambda x: isinstance(x, boolalg.BooleanAtom) or isinstance(x, bool), subst_dict.values())
                 ), "All values of the `subst_dict` should be boolean type"
-        varSet = self.collect_vars(node_id)
+        var_set = self.collect_vars(node_id)
         for var in subst_dict:
-            if var in varSet:
+            if var in var_set:
                 dec, _ = self.get_dec_expr_index(var, create=False)
                 if subst_dict[var]:
                     node_id = self.op_out(node_id, dec, "restrict_high")
@@ -1109,8 +1109,7 @@ class XADD:
 
     def collect_vars(self, node_id: int) -> set:
         node = self.get_exist_node(node_id)
-        var_set = set()
-        node.collect_vars_(var_set)
+        var_set = node.collect_vars()
         return var_set
 
     def reduced_arg_min_or_max(self, node_id: int, var) -> int:
