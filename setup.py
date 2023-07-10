@@ -8,7 +8,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name='xaddpy',
     packages=find_packages(),
-    version='0.1.14',
+    version='0.1.15',
     license='MIT License',
     description='XADD package in Python',
     long_description=long_description,
@@ -16,5 +16,5 @@ setup(
     author='Jihwan Jeong',
     author_email='jiihwan.jeong@gmail.com',
     url='https://github.com/jihwan-jeong/xaddpy',
-    download_url="https://github.com/jihwan-jeong/xaddpy/archive/refs/tags/0.1.14.tar.gz"
+    download_url="https://github.com/jihwan-jeong/xaddpy/archive/refs/tags/0.1.15.tar.gz"
 )
