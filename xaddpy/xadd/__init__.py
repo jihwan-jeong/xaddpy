@@ -1,2 +1,4 @@
-from xaddpy.xadd.xadd import (XADD, ControlFlow, DeltaFunctionSubstitution,
+from xaddpy.xadd.xadd import (XADD,
+                              ControlFlow,
+                              DeltaFunctionSubstitution,
                               XADDLeafMinOrMax)

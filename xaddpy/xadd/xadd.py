@@ -1596,7 +1596,7 @@ class XADD:
         decision_values.pop()
 
         ret = self.get_internal_node(node.dec, low, high)
-        if isinstance(leaf_op, DeltaFunctionSubstitution):
+        if leaf_op._require_canonical:
             ret = self.make_canonical(ret)
 
         # Put return value in cache and return  # TODO: this does not distinguish different leaf operations
@@ -1792,6 +1792,7 @@ class NullDec:
 class XADDLeafOperation(metaclass=abc.ABCMeta):
     def __init__(self, context: XADD):
         self._context: XADD = context
+        self._require_canonical = False
 
     @abc.abstractmethod
     def process_xadd_leaf(self, decisions, decision_values, leaf_val):
@@ -1852,6 +1853,7 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
         all occurrences of sub_var will be replaced.
         """
         super().__init__(context)
+        self._require_canonical = True
         self._leafSubs: Dict[sympy.Symbol, Union[float, int, bool]] = {}
         self._xadd_sub_at_leaves: int = xadd_sub_at_leaves
         self._subVar = sub_var
