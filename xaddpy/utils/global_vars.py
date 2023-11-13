@@ -24,6 +24,7 @@ UNARY_OP = {
     'floor': sympy.floor, 'ceil': sympy.ceiling,
     'log1p': log1p, '-': lambda x: -x, '+': lambda x: x,
     'int': lambda x, *args: 1 if x else 0,
+    'float': lambda x, *args: float(x),
 }
 EPSILON = 1e-1
 TIMEOUT = 200

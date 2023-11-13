@@ -1845,7 +1845,8 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
             self,
             sub_var: sympy.Symbol,
             xadd_sub_at_leaves: int,
-            context: XADD
+            context: XADD,
+            is_linear: bool = True,
     ):
         """
         From the case statement of 'xadd_sub_at_leaves', 
@@ -1856,6 +1857,7 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
         self._leafSubs: Dict[sympy.Symbol, Union[float, int, bool]] = {}
         self._xadd_sub_at_leaves: int = xadd_sub_at_leaves
         self._subVar = sub_var
+        self._is_linear = is_linear
 
     def process_xadd_leaf(self, decisions, decision_values, leaf_val):
         self._leafSubs = {}
@@ -1874,7 +1876,8 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
         else:
             self._leafSubs[self._subVar] = leaf_val
             ret = self._context.substitute(self._xadd_sub_at_leaves, self._leafSubs)
-            ret = self._context.reduce_lp(ret)
+            if self._is_linear:
+                ret = self._context.reduce_lp(ret)
             return ret
 
 
