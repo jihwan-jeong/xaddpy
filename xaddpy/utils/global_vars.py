@@ -1,6 +1,7 @@
 import sympy
 import sympy.core.relational as relational
 from sympy.codegen.rewriting import optimize, optims_c99
+from sympy.logic import boolalg
 
 
 def log1p(x: sympy.Basic):
@@ -24,7 +25,7 @@ UNARY_OP = {
     'floor': sympy.floor, 'ceil': sympy.ceiling,
     'log1p': log1p, '-': lambda x: -x, '+': lambda x: x,
     'int': lambda x, *args: 1 if x else 0,
-    'float': lambda x, *args: float(x),
+    'float': lambda x, *args: float(bool(x)) if isinstance(x, boolalg.BooleanAtom) else float(x),
 }
 EPSILON = 1e-1
 TIMEOUT = 200
