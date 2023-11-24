@@ -2100,13 +2100,15 @@ class XADDLeafMinOrMax(XADDLeafOperation):
             var: sympy.Symbol,
             is_max: bool,
             bound_dict: Dict[sympy.Symbol, tuple],
-            context: XADD
+            context: XADD,
+            annotate: bool = False,
     ):
         super().__init__(context)
         self._var: sympy.Symbol = var
         self._context._opt_var: sympy.Symbol = var
         self._is_max: bool = is_max
         self._running_result: int = -1
+        self.annotate = annotate
         if var in bound_dict:
             self._lower_bound: Union[int, float, numbers.Number] = bound_dict[var][0]
             self._upper_bound: Union[int, float, numbers.Number] = bound_dict[var][1]
@@ -2191,6 +2193,7 @@ class XADDLeafMinOrMax(XADDLeafOperation):
         # Substitute lower and upper bounds into leaf node
         eval_lower = self._context.substitute_xadd_for_var_in_expr(leaf_val, var=self._var, xadd=xadd_lower_bound)
         eval_upper = self._context.substitute_xadd_for_var_in_expr(leaf_val, var=self._var, xadd=xadd_upper_bound)
+        annotation = (xadd_upper_bound, xadd_lower_bound) if self.annotate else None
 
         # Take casemin / casemax of eval_lower and eval_upper
         """
@@ -2228,12 +2231,12 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                 upper_half = self._context.apply(ind_true if not is_reversed else ind_false, eval_upper, 'prod')
                 lower_half = self._context.apply(ind_false if not is_reversed else ind_true, eval_lower, 'prod')
                 min_max_eval = self._context.apply(upper_half, lower_half, 'add',
-                                                   annotation=(xadd_upper_bound, xadd_lower_bound))
+                                                   annotation=annotation)
                 min_max_eval = self._context.make_canonical(min_max_eval)
         else:
             # Note: always 1st argument should be upper bound, while 2nd argument is lower bound
             min_max_eval = self._context.apply(eval_upper, eval_lower, 'max' if self._is_max else 'min',
-                                               annotation=(xadd_upper_bound, xadd_lower_bound))
+                                               annotation=annotation)
         # self._context._temp_ub_lb_cache.clear()
 
         # Reduce LP
