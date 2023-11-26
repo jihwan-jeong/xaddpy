@@ -128,15 +128,15 @@ class XADDTNode(Node):
 
     def __hash__(self):
         if self._annotation is None:
-            return hash(self.expr)
+            return hash(str(self.expr))
         else:
-            return hash((self.expr, self._annotation))
+            return hash((str(self.expr), self._annotation))
 
     def __eq__(self, other):
         if self._annotation is None:
-            return other._annotation is None and self.expr == other.expr
+            return other._annotation is None and str(self.expr) == str(other.expr)
         else:
-            return self.expr == other.expr and self._annotation == other._annotation
+            return str(self.expr) == str(other.expr) and self._annotation == other._annotation
 
     def __str__(self, level=0):
         # curr_node_expr = self.expr
