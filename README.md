@@ -21,6 +21,58 @@ pip install xaddpy
 pip install gurobipy    # If you have a license
 ```
 
+## Installing pygraphviz for visualization
+With `pygraphviz`, you can visualize a given XADD in a graph format, which can be very useful. Here, we explain how to install the package.
+
+To begin with, you need to install the following:
+
+- graphviz
+- pygraphviz
+
+Make sure you have activated the right conda environment with `conda activate YOUR_CONDA_ENVIRONMENT`.
+
+### Step 1: Installing graphviz
+
+1. For Ubuntu/Debian users, run the following command.
+
+```shell
+sudo apt-get install graphviz graphviz-dev
+```
+
+2. For Fedora and Red Hat systems, you can do as follows.
+
+```shell
+sudo dnf install graphviz graphviz-devel
+```
+
+3. For Mac users, you can use `brew` to install `graphviz`.
+
+```shell
+brew install graphviz
+```
+
+Unfortunately, we do not provide support for Windows systems, though you can refer to the [pygraphviz documentation](https://pygraphviz.github.io/documentation/stable/install.html) for information.
+
+### Step 2: Installing pygraphviz
+
+1. Linux systems
+
+```shell
+pip install pygraphviz
+```
+
+2. MacOS
+
+```shell
+python -m pip install \
+    --global-option=build_ext \
+    --global-option="-I$(brew --prefix graphviz)/include/" \
+    --global-option="-L$(brew --prefix graphviz)/lib/" \
+    pygraphviz
+```
+
+Note that due to the default installation location by `brew`, you need to provide some additional options for `pip` installation.
+
 ## Using xaddpy
 
 You can find useful XADD usecases in the [xaddpy/tests/test_bool_var.py](xaddpy/tests/test_bool_var.py) and [xaddpy/tests/test_xadd.py](xaddpy/tests/test_xadd.py) files. Here, we will first briefly discuss different ways to build an initial XADD that you want to work with. 
