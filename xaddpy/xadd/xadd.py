@@ -1,13 +1,13 @@
-import warnings
-from sympy.logic import boolalg
-import sympy
-import sympy.core.numbers as numbers
-import sympy.core.relational as relational
-from sympy import oo, S
-import numpy as np
-from pathlib import Path
+"""Implements the main XADD class and its helper classes & functions."""
 
-import xaddpy.utils.util
+import abc
+from pathlib import Path
+from typing import cast, Any, Callable, Dict, List, Optional, Set, Tuple, Union
+import warnings
+
+import numpy as np
+from symengine import oo
+import symengine.lib.symengine_wrapper as core
 
 try:
     from xaddpy.utils.graph import Graph
@@ -17,31 +17,30 @@ except ImportError:
         def __init__(self, *args, **kwargs):
             pass
 
-
-from xaddpy.xadd.node import Node, XADDINode, XADDTNode
-from xaddpy.xadd.reduce_lp import ReduceLPContext
-import abc
 from xaddpy.utils.global_vars import (
     REL_TYPE, OP_TYPE, UNARY_OP, RELATIONAL_OPERATOR, ACCEPTED_RV_TYPES
 )
-from xaddpy.utils.util import check_sympy_boolean, sample_rvs, check_expr_linear
-from xaddpy.xadd.xadd_parse_utils import parse_xadd_grammar
+import xaddpy.utils.util
+from xaddpy.utils.util import check_sym_boolean, sample_rvs, check_expr_linear
 from xaddpy.utils.logger import logger
+from xaddpy.utils.symengine import BooleanVar, RandomVar
+from xaddpy.xadd.node import Node, XADDINode, XADDTNode
+from xaddpy.xadd.reduce_lp import ReduceLPContext
+from xaddpy.xadd.xadd_parse_utils import parse_xadd_grammar
 
-from typing import Callable, Dict, Tuple, Union, cast, List, Optional
 
 USE_APPLY_GET_INODE_CANON = False
 LARGE_INTEGER = 10000
+VAR_TYPE = core.Symbol | BooleanVar | RandomVar
 
 
-def default_ordering(context, expr: sympy.Basic) -> int:
+def default_ordering(context, expr: core.Basic) -> int:
     num_unique_expr = len(context._expr_to_id)
 
     # Decision expression consisting of continuous variables
-    if isinstance(expr, relational.Rel):
-        poly = expr.lhs.as_poly()
-        deg = poly.total_degree()    
-        if deg > 1:
+    if isinstance(expr, core.Rel):
+        is_nonlinear = check_expr_linear(expr)
+        if is_nonlinear:
             index = num_unique_expr + LARGE_INTEGER ** 2
         else:
             index = num_unique_expr + LARGE_INTEGER
@@ -57,42 +56,42 @@ class XADD:
 
     def __init__(self, args: dict = {}):
         # XADD variable maintenance
-        self._cvar_to_id = {}
-        self._id_to_cvar = {}
-        self._bvar_to_id = {}
-        self._id_to_bvar = {}
-        self._rv_to_id = {}
-        self._id_to_rv = {}
-        self._str_var_to_var = {}
-        self._cont_var_set = set()
-        self._bool_var_set = set()
-        self._random_var_set = set()
-        self._rv_to_params = {}
-        self._rv_to_type = {}
+        self._cvar_to_id: Dict[core.Symbol, int] = {}
+        self._id_to_cvar: Dict[int, core.Symbol] = {}
+        self._bvar_to_id: Dict[BooleanVar, int] = {}
+        self._id_to_bvar: Dict[int, BooleanVar] = {}
+        self._rv_to_id: Dict[core.Symbol, int] = {}
+        self._id_to_rv: Dict[int, core.Symbol] = {}
+        self._str_var_to_var: Dict[str, core.Symbol] = {}
+        self._cont_var_set: Set[core.Symbol] = set()
+        self._bool_var_set: Set[BooleanVar] = set()
+        self._random_var_set: Set[RandomVar] = set()
+        self._rv_to_params: Dict[RandomVar, Any] = {}
+        self._rv_to_type: Dict[RandomVar, str] = {}
 
-        self._sympy_to_pulp = {}
+        self._sym_to_pulp = {}
         self._opt_var = None
         self._opt_var_lst = None
         self._eliminated_var = []
         self._decisionVars = set()
         self._min_var_set = set()
         self._free_var_set = set()
-        self._name_space = None
+        self._name_space: Dict[str, VAR_TYPE] = {}
 
         # Bound maintenance (need to be passed from the output of parser function)
         self._var_to_bound = {}
         self._temp_ub_lb_cache = set()
 
         # Decision expression maintenance
-        self._expr_to_id: Dict[sympy.Basic, int] = {}
-        self._id_to_expr: Dict[int, sympy.Basic] = {}
-        self._expr_to_linear_check: Dict[sympy.Basic, bool] = {}
+        self._expr_to_id: Dict[core.Basic, int] = {}
+        self._id_to_expr: Dict[int, core.Basic] = {}
+        self._expr_to_linear_check: Dict[core.Basic, bool] = {}
         self._expr_id_to_linear_check: Dict[int, bool] = {}
 
         # XADD node maintenance
         self._id_to_node: Dict[int, Node] = {}
         self._node_to_id: Dict[Node, int] = {}
-        self._var_to_anno: Dict[sympy.Symbol, int] = {}     # annotation dictionary for argmin / argmax
+        self._var_to_anno: Dict[core.Symbol, int] = {}     # annotation dictionary for argmin / argmax
 
         # Flush
         self._special_nodes = set()
@@ -119,7 +118,7 @@ class XADD:
 
         # temporary nodes
         self._tempINode = XADDINode(-1, -1, -1, context=self)
-        self._temp_term_node = XADDTNode(sympy.S(-1), context=self)
+        self._temp_term_node = XADDTNode(core.S(-1), context=self)
 
         # Ensure that the 0th decision ID is invalid
         null = NullDec()
@@ -145,7 +144,7 @@ class XADD:
     def set_variable_ordering_func(self, func: Callable):
         XADD._func_var_index = func
     
-    def add_random_var(self, var: sympy.Symbol, **kwargs):
+    def add_random_var(self, var: RandomVar, **kwargs):
         if not var in self._random_var_set:
             assert kwargs.get('params') is not None
             assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
@@ -154,40 +153,46 @@ class XADD:
             self._str_var_to_var[str(var)] = var
             self._rv_to_id[var] = num_existing_rv
             self._id_to_rv[num_existing_rv] = var
-            
+
             self._rv_to_params[var] = kwargs['params']
             self._rv_to_type[var] = kwargs['type']
+            self._name_space[str(var)] = var
 
-    def add_continuous_var(self, var: sympy.Symbol):
+    def add_continuous_var(self, var: core.Symbol):
         if not var in self._cont_var_set:
             num_existing_cvar = len(self._cont_var_set)
             self._cont_var_set.add(var)
             self._str_var_to_var[str(var)] = var
             self._cvar_to_id[var] = num_existing_cvar
             self._id_to_cvar[num_existing_cvar] = var
+            self._name_space[str(var)] = var
 
-    def add_boolean_var(self, var: sympy.Symbol):
-        if not var._assumptions.get('bool', False):
-            print(f"The type of boolean variable {var} is not correctly set..")
-            var._assumptions['bool'] = True
+    def add_boolean_var(self, var: Union[core.Symbol, BooleanVar]):
+        if not isinstance(var, BooleanVar):
+            print(f"The type of boolean variable {var} is not correctly set.")
+            var = BooleanVar(var)
         if var not in self._bool_var_set:
             num_existing_bvar = len(self._bool_var_set)
             self._bool_var_set.add(var)
             self._str_var_to_var[str(var)] = var
             self._bvar_to_id[var] = num_existing_bvar
             self._id_to_bvar[num_existing_bvar] = var
-            
+            self._name_space[str(var)] = var
+
+    def get_var_from_name(self, name: str) -> VAR_TYPE:
+        return self._name_space.get(name)
+
     def create_standard_nodes(self):
         """
         Create and store standard nodes and generate indices, which can be frequently used.
         """
-        self.ZERO = self.get_leaf_node(sympy.S(0))
-        self.ONE = self.get_leaf_node(sympy.S(1))
-        self.TRUE = self.get_leaf_node(sympy.true)
-        self.FALSE = self.get_leaf_node(sympy.false)
+        self.ZERO = self.get_leaf_node(core.S(0))
+        self.ONE = self.get_leaf_node(core.S(1))
+        self.TRUE = self.get_leaf_node(core.true)
+        self.FALSE = self.get_leaf_node(core.false)
         self.oo = self.get_leaf_node(oo)
         self.NEG_oo = self.get_leaf_node(-oo)
-        self.NAN = self.get_leaf_node(sympy.nan)
+        self.NAN = self.get_leaf_node(core.nan)
 
     def add_eliminated_var(self, var):
         self._eliminated_var.append(var)
@@ -206,11 +211,11 @@ class XADD:
         op = OP_TYPE[type(term)]
         return self.apply(xadd1, xadd2, op)
 
-    def convert_to_xadd(self, term: sympy.Basic, **kwargs):
-        if isinstance(term, sympy.Symbol) or \
-            isinstance(term, numbers.Number) or \
-                isinstance(term, boolalg.BooleanAtom):
-            if term._assumptions.get('bool', False):
+    def convert_to_xadd(self, term: core.Basic, **kwargs):
+        if isinstance(term, VAR_TYPE) or \
+            isinstance(term, core.Number) or \
+                isinstance(term, core.BooleanAtom):
+            if isinstance(term, BooleanVar):
                 dec, is_reversed = self.get_dec_expr_index(term, create=True, **kwargs)
                 low, high = self.FALSE, self.TRUE
                 if is_reversed:
@@ -220,12 +225,17 @@ class XADD:
         else:
             return self.convert_func_to_xadd(term, **kwargs)
 
-    def build_initial_xadd(self, xadd_as_list: List, to_canonical=True):
+    def build_initial_xadd(
+            self, xadd_as_list: List[core.Basic], to_canonical: bool = True
+    ):
         """
         Given decisions and leaf values in a list, 
         recursively build initial XADD and return the id of the root node.
-        :param xadd_as_list:        (list)
-        :return:
+
+        Args:
+            xadd_as_list (List[core.Basic])
+        Returns:
+            int: The id of the root node
         """
         if len(xadd_as_list) == 1:
             return self.get_leaf_node(xadd_as_list[0])
@@ -388,25 +398,25 @@ class XADD:
     
     def evaluate_decision(
             self,
-            dec_expr: sympy.Basic,
-            bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
-            cont_assign: Dict[sympy.Symbol, Union[int, float]], 
+            dec_expr: core.Basic,
+            bool_assign: Dict[core.Symbol, Union[core.BooleanAtom, bool]], 
+            cont_assign: Dict[core.Symbol, Union[int, float]], 
     ) -> Union[bool, None]:
-        if isinstance(dec_expr, boolalg.BooleanAtom):
+        if isinstance(dec_expr, core.BooleanAtom):
             return bool(dec_expr)
         # if a decision expression is a single symbol, it should be a boolean decision
-        elif dec_expr._assumptions.get('bool', False):
+        elif isinstance(dec_expr, BooleanVar):
             return bool_assign.get(dec_expr)
         # Inequality decision
-        elif isinstance(dec_expr, relational.Rel):
+        elif isinstance(dec_expr, core.Rel):
             # if any of the variables in dec_expr is not evaluated, returns None
             var_set = dec_expr.free_symbols
             non_assigned_vars = var_set.difference(cont_assign.keys())
             if len(non_assigned_vars) > 0:
                 return None
 
-            dec_expr = dec_expr.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in cont_assign.items()})
-            assert isinstance(dec_expr, boolalg.BooleanAtom) or isinstance(dec_expr, bool)
+            dec_expr = dec_expr.xreplace({sub_out: core.S(sub_in) for sub_out, sub_in in cont_assign.items()})
+            assert isinstance(dec_expr, core.BooleanAtom) or isinstance(dec_expr, bool)
             return bool(dec_expr)
         else:
             return None
@@ -414,8 +424,8 @@ class XADD:
     def evaluate(
             self, 
             node_id: int, 
-            bool_assign: Dict[sympy.Symbol, Union[boolalg.BooleanAtom, bool]], 
-            cont_assign: Dict[sympy.Symbol, Union[int, float]],
+            bool_assign: Dict[core.Symbol, Union[core.BooleanAtom, bool]], 
+            cont_assign: Dict[core.Symbol, Union[int, float]],
             primitive_type: bool = False,
     ) -> Union[float, int, bool, None]:
         """
@@ -438,19 +448,19 @@ class XADD:
         # Now at a terminal node; evaluate the expression
         t: XADDTNode = cast(XADDTNode, node)
         expr = t.expr
-        expr = expr.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in cont_assign.items()})
+        expr = expr.xreplace({sub_out: core.S(sub_in) for sub_out, sub_in in cont_assign.items()})
         
         # Not all required variables were assigned
         if len(expr.free_symbols) > 0:
             return
         
         # Return python primitive type
-        if primitive_type and isinstance(expr, boolalg.BooleanAtom):
+        if primitive_type and isinstance(expr, core.BooleanAtom):
             return bool(expr)
         elif primitive_type:
             return float(expr)
         
-        # Otherwise, return sympy type
+        # Otherwise, return symengine instance
         return expr
     
     def unary_op(self, node_id: int, op: str, *args) -> int:
@@ -477,19 +487,20 @@ class XADD:
             if op == 'sgn':
                 return self.sgn_op(node_id)
             elif op == '~':
-                assert check_sympy_boolean(expr)
-                expr = ~expr
-                if isinstance(expr, boolalg.BooleanAtom):
+                assert check_sym_boolean(expr)
+                if isinstance(expr, core.BooleanAtom):
+                    expr = core.logical_not(expr)
                     return self.get_leaf_node(expr, node._annotation)
                 else:
-                    return self.get_dec_node(expr, sympy.false, sympy.true)
-            elif op == 'abs' and not isinstance(expr, numbers.Number):
+                    assert isinstance(expr, BooleanVar)
+                    return self.get_dec_node(expr, core.false, core.true)
+            elif op == 'abs' and not isinstance(expr, core.Number):
                 return self.abs_op(node_id)
             
             sp_op = UNARY_OP.get(op, None)
             if sp_op is None:
                 raise ValueError(f"Unary operation {op} not recognized")
-            expr = sympy.expand(sp_op(expr, *args))    # TODO: Need to simplify? that can take a while
+            expr = core.expand(sp_op(expr, *args))    # TODO: Need to simplify? that can take a while
             annotation = node._annotation
             return self.get_leaf_node(expr, annotation)
         
@@ -562,7 +573,7 @@ class XADD:
         dec1, is_reversed = self.get_dec_expr_index(dec_expr1, create=True)
         dec_expr2 = sympy.Eq(expr, 0)
         low = self.ONE        
-        high = self.get_dec_node(dec_expr2, sympy.S(-1), sympy.S(0))
+        high = self.get_dec_node(dec_expr2, core.S(-1), core.S(0))
         
         if is_reversed:
             high, low = low, high
@@ -572,7 +583,7 @@ class XADD:
         return ret
 
     def scalar_op(self, node_id: int, val: float, op: str) -> int:
-        scalar_node = self.get_leaf_node(sympy.S(val))
+        scalar_node = self.get_leaf_node(core.S(val))
         return self.apply(node_id, scalar_node, op)
 
     def apply(self, id1: int, id2: int, op: str, annotation=None) -> int:
@@ -823,12 +834,12 @@ class XADD:
 
         # Handle 'and' and 'or' operations when it can be immediately evaluated
         if op == 'or' or op == 'and':
-            if n1.is_leaf() and isinstance(n1.expr, boolalg.BooleanAtom):
+            if n1.is_leaf() and isinstance(n1.expr, core.BooleanAtom):
                 if op == 'or' and n1.expr:
                     return self.TRUE
                 if op == 'and' and not n1.expr:
                     return self.FALSE
-            if n2.is_leaf() and isinstance(n2.expr, boolalg.BooleanAtom):
+            if n2.is_leaf() and isinstance(n2.expr, core.BooleanAtom):
                 if op == 'or' and n2.expr:
                     return self.TRUE
                 if op == 'and' and not n2.expr:
@@ -846,39 +857,39 @@ class XADD:
             # need to create a decision node
             n1_expr, n2_expr = n1.expr, n2.expr
             if op in ('add', 'subtract', 'prod', 'div') and \
-                (n1_expr._assumptions.get('bool', False) or 
-                 isinstance(n1_expr, boolalg.BooleanAtom) or
-                 n2_expr._assumptions.get('bool', False) or 
-                 isinstance(n2_expr, boolalg.BooleanAtom) 
+                (isinstance(n1_expr, BooleanVar) or 
+                 isinstance(n1_expr, core.BooleanAtom) or
+                 isinstance(n2_expr, BooleanVar) or 
+                 isinstance(n2_expr, core.BooleanAtom) 
             ):
-                if n1_expr._assumptions.get('bool', False):
-                    dec_node1 = self.get_dec_node(n1_expr, sympy.S(0), sympy.S(1))
-                elif isinstance(n1_expr, boolalg.BooleanAtom):
+                if isinstance(n1_expr, BooleanVar):
+                    dec_node1 = self.get_dec_node(n1_expr, core.S(0), core.S(1))
+                elif isinstance(n1_expr, core.BooleanAtom):
                     dec_node1 = self.ONE if n1_expr else self.ZERO
                 else:
                     dec_node1 = id1
-                if n2_expr._assumptions.get('bool', False):
-                    dec_node2 = self.get_dec_node(n2_expr, sympy.S(0), sympy.S(1))
-                elif isinstance(n2_expr, boolalg.BooleanAtom):
+                if isinstance(n2_expr, BooleanVar):
+                    dec_node2 = self.get_dec_node(n2_expr, core.S(0), core.S(1))
+                elif isinstance(n2_expr, core.BooleanAtom):
                     dec_node2 = self.ONE if n2_expr else self.ZERO
                 else:
                     dec_node2 = id2
                 return self.apply(dec_node1, dec_node2, op)
-                
+
             if op in ('add', 'subtract', 'prod', 'div', 'and', 'or'):
-                
+
                 if op == 'add':
                     result = n1_expr + n2_expr
                 elif op == 'subtract':
                     result = n1_expr - n2_expr
                 elif op == 'prod':
-                    result = sympy.expand(n1_expr * n2_expr)
+                    result = core.expand(n1_expr * n2_expr)
                 elif op == 'div':
-                    result = sympy.expand(n1_expr / n2_expr)
+                    result = core.expand(n1_expr / n2_expr)
                 else:
-                    assert check_sympy_boolean(n1_expr)
-                    assert check_sympy_boolean(n2_expr)
-                    dec_n2 = self.get_dec_node(n2_expr, sympy.false, sympy.true)
+                    assert check_sym_boolean(n1_expr)
+                    assert check_sym_boolean(n2_expr)
+                    dec_n2 = self.get_dec_node(n2_expr, core.false, core.true)
                     dec_n1_id, is_reversed = self.get_dec_expr_index(n1_expr, create=True)
                     if op == 'and':
                         high, low = dec_n2, self.FALSE
@@ -902,14 +913,14 @@ class XADD:
                 expr = lhs <= rhs
 
             # handle tautological cases
-            if expr == sympy.S.true:        
+            if expr == core.true:        
                 if op == 'min':             # n1 <= n2 holds
                     return self.get_leaf_node(n1.expr, annotation[0]) if annotation is not None else id1
                 elif op == 'max':           # n1 <= n2 holds
                     return self.get_leaf_node(n2.expr, annotation[1]) if annotation is not None else id2
                 else:                       # n1 (rel) n2 holds
                     return self.TRUE
-            elif expr == sympy.S.false:
+            elif expr == core.false:
                 if op == 'min':             # n1 > n2 holds
                     return self.get_leaf_node(n2.expr, annotation[1]) if annotation is not None else id2
                 elif op == 'max':           # n1 > n2 holds
@@ -954,7 +965,7 @@ class XADD:
     def reduce_sub(        
             self, 
             node_id: int,
-            subst_dict: Dict[sympy.Symbol, Union[sympy.Basic, float, int]], 
+            subst_dict: Dict[core.Symbol, Union[core.Basic, float, int]], 
             subst_cache: Dict[int, int],
     ) -> int:
         """
@@ -971,8 +982,8 @@ class XADD:
             node = cast(XADDTNode, node)
             expr = node.expr
             if len(expr.free_symbols.intersection(set(subst_dict.keys()))) > 0:
-                expr = expr.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in subst_dict.items()})
-                expr = sympy.expand(expr)
+                expr = expr.xreplace({sub_out: core.S(sub_in) for sub_out, sub_in in subst_dict.items()})
+                expr = core.expand(expr)
             annotation = node._annotation
             return self.get_leaf_node(expr, annotation)
 
@@ -989,38 +1000,38 @@ class XADD:
         dec = node.dec
         dec_expr = self._id_to_expr[dec]
         # When a Boolean variable is replaced
-        if isinstance(dec_expr, sympy.Symbol):
+        if isinstance(dec_expr, BooleanVar):
             sub_in = subst_dict.get(dec_expr, None)
             is_reversed = False
             if sub_in is not None:
                 # Handle tautologies
-                if sub_in == S.true:
+                if sub_in == core.true:
                     subst_cache[node_id] = high
                     return high
-                elif sub_in == S.false:
+                elif sub_in == core.false:
                     subst_cache[node_id] = low
                     return low
                 dec, is_reversed = self.get_dec_expr_index(sub_in, create=True)
         else:
-            lhs = dec_expr.lhs
+            lhs = dec_expr.args[0]
             if len(lhs.free_symbols.intersection(set(subst_dict.keys()))) > 0:
-                lhs = lhs.xreplace({sub_out: sympy.S(sub_in) for sub_out, sub_in in subst_dict.items()})
+                lhs = lhs.xreplace({sub_out: core.S(sub_in) for sub_out, sub_in in subst_dict.items()})
             
             # Check if the expression holds in equality and the true branch is NaN
-            # Assuming canonical expression.. rhs is always 0. Hence, lhs == 0 iff dec_expr == S.true.
+            # Assuming canonical expression.. rhs is always 0. Hence, lhs == 0 iff dec_expr == core.true.
             # In this case, set dec_expr = False, so that false branch can be chosen instead.
             if lhs == 0 and high == self.NAN:
-                dec_expr = S.false
+                dec_expr = core.false
             elif lhs == 0 and low == self.NAN:
-                dec_expr = S.true
+                dec_expr = core.true
             else:
                 dec_expr = lhs <= 0
 
             # # Handle tautologies
-            if dec_expr == S.true:
+            if dec_expr == core.true:
                 subst_cache[node_id] = high
                 return high
-            elif dec_expr == S.false:
+            elif dec_expr == core.false:
                 subst_cache[node_id] = low
                 return low
 
@@ -1049,16 +1060,16 @@ class XADD:
         :return:
         """
         assert all(
-                    map(lambda x: isinstance(x, boolalg.BooleanAtom) or isinstance(x, bool), subst_dict.values())
+                    map(lambda x: isinstance(x, core.BooleanAtom) or isinstance(x, bool), subst_dict.values())
                 ), "All values of the `subst_dict` should be boolean type"
         var_set = self.collect_vars(node_id)
         for var in subst_dict:
             if var in var_set:
-                dec, _ = self.get_dec_expr_index(var, create=False)
+                dec_id, _ = self.get_dec_expr_index(var, create=False)
                 if subst_dict[var]:
-                    node_id = self.op_out(node_id, dec, "restrict_high")
+                    node_id = self.op_out(node_id, dec_id, "restrict_high")
                 else:
-                    node_id = self.op_out(node_id, dec, "restrict_low")
+                    node_id = self.op_out(node_id, dec_id, "restrict_low")
         return node_id
 
     def op_out(self, node_id: int, dec_id: int, op: str):
@@ -1150,15 +1161,15 @@ class XADD:
                 high, low = low, high
             return self.get_inode_canon(dec, low, high)
 
-    def get_all_anno(self) -> Dict[sympy.Symbol, int]:
+    def get_all_anno(self) -> Dict[core.Symbol, int]:
         return self._var_to_anno
 
-    def get_annotation(self, var: sympy.Symbol) -> int:
+    def get_annotation(self, var: core.Symbol) -> int:
         return self._var_to_anno[var]
 
-    def update_anno(self, var: sympy.Symbol, anno: int):
+    def update_anno(self, var: core.Symbol, anno: int):
         if not hasattr(self, '_var_to_anno'):
-            self._var_to_anno: Dict[sympy.Symbol, int] = {}
+            self._var_to_anno: Dict[core.Symbol, int] = {}
         self._var_to_anno[var] = anno
 
     def get_node(self, node_id: int) -> Node:
@@ -1172,7 +1183,7 @@ class XADD:
     def min_or_max_multi_var(
             self,
             node_id: int,
-            var_lst: List[sympy.Symbol],
+            var_lst: List[core.Symbol],
             is_min: bool = True,
             annotate: bool = True,
     ):
@@ -1196,7 +1207,7 @@ class XADD:
         """
         Given an XADD root node 'node_id', minimize (or maximize) 'var' out.
         :param node_id:      (int)
-        :param var:                 (sympy.Symbol)
+        :param var:                 (core.Symbol)
         :return:                    (int)
         """
         # Check if binary variable
@@ -1218,14 +1229,14 @@ class XADD:
         return running_result
 
     def substitute_xadd_for_var_in_expr(
-            self, leaf_val: sympy.Basic, var: sympy.Symbol, xadd: int
+            self, leaf_val: core.Basic, var: core.Symbol, xadd: int
     ) -> int:
         """
         Substitute XADD into 'var' that occurs in 'val' (a Sympy expression). 
         This is only called for leaf expressions.
 
-        :param leaf_val:    (sympy.Basic) sympy expression
-        :param var:         (sympy.Symbol) variable to substitute
+        :param leaf_val:    (core.Basic) sympy expression
+        :param var:         (core.Symbol) variable to substitute
         :param xadd:        (int) integer that indicates the XADD to substitute into 'var'
         :return:
         """
@@ -1238,7 +1249,7 @@ class XADD:
             xadd_leaf_expr = node.expr
             # expr = leaf_val.subs(var, xadd_leaf_expr)
             expr = leaf_val.xreplace({var: xadd_leaf_expr})
-            expr = sympy.expand(expr)
+            expr = core.expand(expr)
 
             # Special treatment for oo, -oo
             try:
@@ -1280,7 +1291,7 @@ class XADD:
         return self.get_leaf_node(expr, annotation)
 
     def get_leaf_node(
-            self, expr: sympy.Basic, annotation: Optional[int] = None, **kwargs
+            self, expr: core.Basic, annotation: Optional[int] = None, **kwargs
     ) -> int:
         """Returns the ID of the leaf node with given SymPy expression and annotation.
 
@@ -1294,7 +1305,7 @@ class XADD:
         If this information was not provided, this method will result in an assertion error.
         
         Args:
-            expr (sympy.Basic): The SymPy expression associated with the leaf node.
+            expr (core.Basic): The SymPy expression associated with the leaf node.
             annotation (Optional[int], optional): The node ID of the annotation.
         
         Returns:
@@ -1314,11 +1325,14 @@ class XADD:
             vars_in_expr = expr.free_symbols.copy()
             diff_vars = vars_in_expr.difference(self._cont_var_set).difference(self._bool_var_set)
             for v in diff_vars:
-                if v._assumptions.get('bool', False):
+                if isinstance(v, BooleanVar):
+                    assert len(vars_in_expr) == 1, (
+                        f'BooleanVar {v} should be the only variable in the expression.'
+                    )
                     self.add_boolean_var(v)
                 else:
                     self.add_continuous_var(v)
-                if v._assumptions.get('random', False):
+                if isinstance(v, RandomVar):
                     assert kwargs.get('params') is not None
                     assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
                     self.add_random_var(v, **kwargs)
@@ -1326,13 +1340,13 @@ class XADD:
 
     def get_dec_node(
             self, 
-            dec_expr: Union[relational.Rel, sympy.Symbol, boolalg.BooleanFunction],
-            low_val: sympy.Basic, 
-            high_val: sympy.Basic
+            dec_expr: Union[core.Rel, BooleanVar],
+            low_val: core.Basic, 
+            high_val: core.Basic
     ) -> int:
         """
         Get decision node with relational expression having dec, whose low and high values are also given.
-        :param dec_expr:            (sympy.relational.Rel)
+        :param dec_expr:            (core.Rel)
         :param low_val:             (float)
         :param high_val:            (float)
         :return:
@@ -1346,11 +1360,11 @@ class XADD:
         return self.get_internal_node(dec, low, high)
     
     def canonical_dec_expr(
-            self, expr: sympy.Basic
-    ) -> Tuple[Union[Tuple[sympy.Basic, sympy.Basic], sympy.Basic], bool]:
+            self, expr: core.Basic
+    ) -> Tuple[Union[Tuple[core.Basic, core.Basic], core.Basic], bool]:
         """
         Return canonical form of an expression.
-        It should always take either one of the two forms: expr.lhs <= 0 or expr.lhs >= 0.
+        It should always take either one of the two forms: expr.args[0] <= 0 or expr.args[0] >= 0.
         Args:
             expr:
 
@@ -1361,54 +1375,62 @@ class XADD:
         is_reversed = False
 
         # Handle tautology: simply return without doing anything
-        if expr == sympy.S.true:
+        if expr == core.true:
             return expr, is_reversed
-        elif expr == sympy.S.false:
+        elif expr == core.false:
             return expr, is_reversed
 
         # Handle boolean expressions
-        if not isinstance(expr, relational.Rel):
-            if isinstance(expr, boolalg.Not):
-                expr = ~expr
-                is_reversed = True
-            if not expr._assumptions.get('bool', False):
-                print(f"Expression {expr} will be treated as Boolean")
-                expr._assumptions['bool'] = True
+        if not isinstance(expr, core.Rel):
+            if not expr.is_Boolean and expr.is_symbol:
+                print(f"Variable {expr} will be treated as Boolean")
+                expr = BooleanVar(expr)
                 if expr in self._cont_var_set:
-                    self._cont_var_set.remove(expr)
-                if expr not in self._bool_var_set:
-                    self._bool_var_set.add(expr)
+                    self._cont_var_set.remove(expr.var)
+                self.add_boolean_var(expr)
+            else:
+                assert expr.is_Boolean and expr.is_symbol, (
+                    f'We only support a single Boolean variable as a decision variable,'
+                    f'but got {expr}.'
+                )
             return expr, is_reversed
         
         # Always make 'lhs - rhs <= 0' as canonical expression
-        lhs, rhs, rel = expr.lhs, expr.rhs, REL_TYPE[type(expr)]
+        lhs, rhs, rel = expr.args[0], expr.args[1], REL_TYPE[type(expr)]
         lhs = lhs - rhs
 
         if rel == '>=' or rel == '>':
             is_reversed = True
             rel = '<=' if rel == '>=' else '<'
 
-        # Divide lhs by the coefficient of the first term (cannot be a negative number)
-        coeff_first_term = lhs.as_ordered_terms()[0]
-        if isinstance(coeff_first_term, sympy.core.Number):
-            coeff_first_term = lhs.as_ordered_terms()[1]
+        # Divide lhs by the coefficient of the first term and make it positive.
+        sorted_args = tuple(
+            sorted(lhs.args, 
+                   key=lambda x: ''.join([str(x) for x in x.free_symbols]) 
+                        if x.free_symbols
+                        else str(x)
+            ) 
+        )
+        coeff_first_term = sorted_args[0]
+        if isinstance(coeff_first_term, core.Number):
+            # TODO: the following does not guarantee to return the lowest degree term...
+            # But at least will be canonical?. Need to check.
+            coeff_first_term = sorted_args[1]
 
-        if isinstance(coeff_first_term, sympy.core.Mul):
+        if isinstance(coeff_first_term, core.Mul):
             arg1 = coeff_first_term.args[0]
-            if isinstance(arg1, sympy.core.Number) and arg1 > 0:
-                lhs = lhs / arg1
-            elif isinstance(arg1, sympy.core.Number) and arg1 < 0:
-                lhs = lhs / arg1
-                # divided by a negative number changes the direction of inequality
-                if rel in ('<=', '<', '>', '>='):
+            if isinstance(arg1, core.Number):
+                lhs = (lhs / arg1).expand()
+                # Divided by a negative number changes the direction of inequality
+                if arg1 < 0 and rel in ('<=', '<', '>', '>='):
                     is_reversed = True if not is_reversed else False
-        
-        expr = relational.Relational(lhs, 0, rel)
+
+        expr = RELATIONAL_OPERATOR[rel](lhs, 0)
         return expr, is_reversed
 
     def get_dec_expr_index(
-            self, expr: sympy.Basic, create: bool, canon: bool = False, **kwargs
-    ) -> Tuple[Union[boolalg.BooleanAtom, int], bool]:
+            self, expr: core.Basic, create: bool, canon: bool = False, **kwargs
+    ) -> Tuple[Union[core.BooleanAtom, int], bool]:
         """Given a symbolic expression 'expr', return the index of the expression in XADD._id_to_expr.
         
         Note that if a new random variable is included in the expression,
@@ -1421,13 +1443,13 @@ class XADD:
         If this information was not provided, this method will result in an assertion error.
         
         Args:
-            expr (sympy.Basic): The expression to be used as a decision. This can be a relational
+            expr (core.Basic): The expression to be used as a decision. This can be a relational
                 expression or just a boolean variable.
             create (bool): Whether to assign a new ID for the given expression.
             canon (bool, optional): Deprecated... TODO: check whether this can safely removed.
 
         Returns:
-            Tuple[Union[boolalg.BooleanAtom, int], bool]: _description_
+            Tuple[Union[core.BooleanAtom, int], bool]: _description_
         """
         is_reversed = False
         if not canon:
@@ -1453,18 +1475,23 @@ class XADD:
             self._expr_id_to_linear_check[index] = is_linear
             
             # Add in all new variables
-            vars_in_expr = expr.free_symbols.copy()
-            diff_vars = vars_in_expr.difference(self._cont_var_set).\
-                difference(self._bool_var_set).difference(self._random_var_set)
-            for v in diff_vars:
-                if v._assumptions.get('bool', False):
-                    self.add_boolean_var(v)
-                else:
+            # (1) If a single symbol, it has to be Boolean.
+            if isinstance(expr, VAR_TYPE):
+                assert not isinstance(expr, RandomVar), (
+                    'Currently, we do not use a single RV as a decision variable.'
+                )
+                self.add_boolean_var(expr)
+            # (2) Otherwise, all continuous variables, including RVs.
+            else:
+                vars_in_expr = expr.free_symbols.copy()
+                diff_vars = vars_in_expr.difference(self._cont_var_set)
+                for v in diff_vars:
                     self.add_continuous_var(v)
-                if v._assumptions.get('random', False):
-                    assert kwargs.get('params') is not None
-                    assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
-                    self.add_random_var(v, **kwargs)
+
+                    if isinstance(v, RandomVar):
+                        assert kwargs.get('params') is not None
+                        assert kwargs.get('type') is not None and kwargs['type'] in ACCEPTED_RV_TYPES
+                        self.add_random_var(v, **kwargs)
         return index, is_reversed
 
     def get_exist_node(self, node_id: int) -> Node:
@@ -1491,9 +1518,9 @@ class XADD:
 
         # Handle tautological cases
         dec_expr = self._id_to_expr.get(dec_id, None)
-        if dec_expr == sympy.S.true:
+        if dec_expr == core.true:
             return high
-        elif dec_expr == sympy.S.false:
+        elif dec_expr == core.false:
             return low
 
         # Retrieve XADDINode (create if it does not exist)
@@ -1742,9 +1769,9 @@ class XADD:
         
         # Note: when it is just a leaf expression: not supported
         if xadd_str.rfind('(') == 0 and xadd_str.rfind('[') == 2:
-            xadd_as_list = [sympy.sympify(xadd_str.strip('( [] )'), locals=locals)]
+            xadd_as_list = [core.sympify(xadd_str.strip('( [] )'))]
         else:
-            xadd_as_list = parse_xadd_grammar(xadd_str, ns=locals if locals is not None else {})[1][0]
+            xadd_as_list = parse_xadd_grammar(xadd_str)[1][0]
         node_id = self.build_initial_xadd(xadd_as_list, to_canonical=to_canonical)
         return node_id
 
@@ -1821,10 +1848,10 @@ class ControlFlow(XADDLeafOperation):
         self._true_branch = true_branch
         self._false_branch = false_branch
 
-    def process_xadd_leaf(self, decisions: list, decision_values: list, leaf_val: sympy.Basic):
-        assert check_sympy_boolean(leaf_val) or leaf_val == 1 or leaf_val == 0
+    def process_xadd_leaf(self, decisions: list, decision_values: list, leaf_val: core.Basic):
+        assert check_sym_boolean(leaf_val) or leaf_val == 1 or leaf_val == 0
         
-        if isinstance(leaf_val, boolalg.BooleanAtom):
+        if isinstance(leaf_val, core.BooleanAtom):
             if leaf_val:
                 return self._true_branch
             else:
@@ -1843,7 +1870,7 @@ class ControlFlow(XADDLeafOperation):
 class DeltaFunctionSubstitution(XADDLeafOperation):
     def __init__(
             self,
-            sub_var: sympy.Symbol,
+            sub_var: core.Symbol,
             xadd_sub_at_leaves: int,
             context: XADD,
             is_linear: bool = True,
@@ -1854,7 +1881,7 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
         """
         super().__init__(context)
         self._require_canonical = True
-        self._leafSubs: Dict[sympy.Symbol, Union[float, int, bool]] = {}
+        self._leafSubs: Dict[core.Symbol, Union[float, int, bool]] = {}
         self._xadd_sub_at_leaves: int = xadd_sub_at_leaves
         self._subVar = sub_var
         self._is_linear = is_linear
@@ -1862,13 +1889,13 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
     def process_xadd_leaf(self, decisions, decision_values, leaf_val):
         self._leafSubs = {}
         
-        if leaf_val == sympy.nan:
+        if leaf_val == core.nan:
             return self._context.NAN
         # If boolean variable, handle differently
         elif self._subVar in self._context._bool_var_set:
             self._leafSubs[self._subVar] = True \
                 if leaf_val == 1 or \
-                    ((isinstance(leaf_val, boolalg.BooleanAtom) or isinstance(leaf_val, bool)) 
+                    ((isinstance(leaf_val, core.BooleanAtom) or isinstance(leaf_val, bool)) 
                         and leaf_val)\
                 else False
             return self._context.substitute_bool_vars(self._xadd_sub_at_leaves, self._leafSubs)
@@ -1884,22 +1911,22 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
 class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
     def __init__(
             self, 
-            var_lst: List[sympy.Symbol],
+            var_lst: List[core.Symbol],
             is_max: bool,
-            bound_dict: Dict[sympy.Symbol, tuple],
+            bound_dict: Dict[core.Symbol, tuple],
             context: XADD,
             annotate: bool
     ):
         super().__init__(context)
-        self._var_lst: List[sympy.Symbol] = var_lst
-        self._context._opt_var_lst: List[sympy.Symbol] = var_lst
+        self._var_lst: List[core.Symbol] = var_lst
+        self._context._opt_var_lst: List[core.Symbol] = var_lst
         self._is_max: bool = is_max
-        self.bound_dict: Dict[sympy.Symbol, tuple] = bound_dict
+        self.bound_dict: Dict[core.Symbol, tuple] = bound_dict
         self._running_result: int = -1
         self._annotate: bool = annotate
 
     @property
-    def _var(self) -> sympy.Symbol:
+    def _var(self) -> core.Symbol:
         return self._var_lst[0]
 
     @property
@@ -1911,13 +1938,13 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
         return self.bound_dict[self._var][1]
 
     def process_xadd_leaf(
-            self, decisions: list, decision_values: list, leaf_val: sympy.Basic
+            self, decisions: list, decision_values: list, leaf_val: core.Basic
     ):
         """
 
         :param decisions:
         :param decision_values:
-        :param leaf_val:        (sympy.Basic) leaf expression
+        :param leaf_val:        (core.Basic) leaf expression
         :return:
         """
         # Check if below computation is unnecessary
@@ -1934,8 +1961,8 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
         # Bound management
         lower_bound = []
         upper_bound = []
-        lower_bound.append(sympy.S(self._lower_bound))
-        upper_bound.append(sympy.S(self._upper_bound))
+        lower_bound.append(core.S(self._lower_bound))
+        upper_bound.append(core.S(self._upper_bound))
 
         # Independent decisions (incorporated later): [(dec_expr, bool)]
         target_var_indep_decisions = []
@@ -1947,7 +1974,7 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                 target_var_indep_decisions.append((dec_expr, is_true))
                 continue
 
-            lhs, rhs, gt = dec_expr.lhs, dec_expr.rhs, isinstance(dec_expr, relational.GreaterThan)
+            lhs, rhs, gt = dec_expr.args[0], dec_expr.args[1], isinstance(dec_expr, relational.GreaterThan)
             gt = (gt and is_true) or (not gt and not is_true)
             expr = lhs >= rhs if gt else lhs <= rhs
 
@@ -1981,7 +2008,7 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
         for e1 in lower_bound:
             for e2 in upper_bound:
                 comp = (e2 - e1 >= 0)   # ub - lb
-                if comp == sympy.S.true or \
+                if comp == core.true or \
                         e2 == oo or e1 == -oo:
                     continue
                 target_var_indep_decisions.append((comp, True))
@@ -2019,9 +2046,9 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
             expr = xaddpy.utils.util.get_multiplied_expr(leaf_val, self._var)
         if is_bilinear and expr != 0:
             dec_expr = expr <= 0
-            if dec_expr == sympy.S.true:
+            if dec_expr == core.true:
                 min_max_eval = eval_upper
-            elif dec_expr == sympy.S.false:
+            elif dec_expr == core.false:
                 min_max_eval = eval_lower
             else:
                 dec, is_reversed = self._context.get_dec_expr_index(dec_expr, create=True)
@@ -2097,32 +2124,32 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
 class XADDLeafMinOrMax(XADDLeafOperation):
     def __init__(
             self, 
-            var: sympy.Symbol,
+            var: core.Symbol,
             is_max: bool,
-            bound_dict: Dict[sympy.Symbol, tuple],
+            bound_dict: Dict[core.Symbol, tuple],
             context: XADD,
             annotate: bool = False,
     ):
         super().__init__(context)
-        self._var: sympy.Symbol = var
-        self._context._opt_var: sympy.Symbol = var
+        self._var: core.Symbol = var
+        self._context._opt_var: core.Symbol = var
         self._is_max: bool = is_max
         self._running_result: int = -1
         self.annotate = annotate
         if var in bound_dict:
-            self._lower_bound: Union[int, float, numbers.Number] = bound_dict[var][0]
-            self._upper_bound: Union[int, float, numbers.Number] = bound_dict[var][1]
+            self._lower_bound: Union[int, float, core.Number] = bound_dict[var][0]
+            self._upper_bound: Union[int, float, core.Number] = bound_dict[var][1]
         else:
             print("No domain bounds over {} are provided... using -oo and oo as lower and upper bounds.".format(var))
-            self._lower_bound: Union[int, float, numbers.Number] = -oo
-            self._upper_bound: Union[int, float, numbers.Number] = oo
+            self._lower_bound: Union[int, float, core.Number] = -oo
+            self._upper_bound: Union[int, float, core.Number] = oo
 
-    def process_xadd_leaf(self, decisions: list, decision_values: list, leaf_val: sympy.Basic):
+    def process_xadd_leaf(self, decisions: list, decision_values: list, leaf_val: core.Basic):
         """
 
         :param decisions:
         :param decision_values:
-        :param leaf_val:        (sympy.Basic) leaf expression
+        :param leaf_val:        (core.Basic) leaf expression
         :return:
         """
         # Check if below computation is unnecessary
@@ -2139,8 +2166,8 @@ class XADDLeafMinOrMax(XADDLeafOperation):
         # Bound management
         lower_bound = []
         upper_bound = []
-        lower_bound.append(sympy.S(self._lower_bound))
-        upper_bound.append(sympy.S(self._upper_bound))
+        lower_bound.append(core.S(self._lower_bound))
+        upper_bound.append(core.S(self._upper_bound))
 
         # Independent decisions (incorporated later): [(dec_expr, bool)]
         target_var_indep_decisions = []
@@ -2152,7 +2179,7 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                 target_var_indep_decisions.append((dec_expr, is_true))
                 continue
 
-            lhs, rhs, gt = dec_expr.lhs, dec_expr.rhs, isinstance(dec_expr, relational.GreaterThan)
+            lhs, rhs, gt = dec_expr.args[0], dec_expr.args[1], isinstance(dec_expr, core.GreaterThan)
             gt = (gt and is_true) or (not gt and not is_true)
             expr = lhs >= rhs if gt else lhs <= rhs
 
@@ -2182,12 +2209,12 @@ class XADDLeafMinOrMax(XADDLeafOperation):
         for e1 in lower_bound:
             for e2 in upper_bound:
                 comp = (e2 - e1 >= 0)   # ub - lb
-                if comp == sympy.S.true or \
+                if comp == core.true or \
                         e2 == oo or e1 == -oo:
                     continue
                 target_var_indep_decisions.append((comp, True))
-                assert isinstance(comp, relational.GreaterThan)
-                # comp_lhs, is_reversed = self._context.clean_up_expr(comp.lhs, factor=True)
+                assert isinstance(comp, core.GreaterThan)
+                # comp_lhs, is_reversed = self._context.clean_up_expr(comp.args[0], factor=True)
                 # self._context._temp_ub_lb_cache.add(comp_lhs if not is_reversed else -comp_lhs)
 
         # Substitute lower and upper bounds into leaf node
@@ -2220,9 +2247,9 @@ class XADDLeafMinOrMax(XADDLeafOperation):
             expr = xaddpy.utils.util.get_multiplied_expr(leaf_val, self._var)
         if is_bilinear and expr != 0:
             dec_expr = expr <= 0
-            if dec_expr == sympy.S.true:
+            if dec_expr == core.true:
                 min_max_eval = eval_upper
-            elif dec_expr == sympy.S.false:
+            elif dec_expr == core.false:
                 min_max_eval = eval_lower
             else:
                 dec, is_reversed = self._context.get_dec_expr_index(dec_expr, create=True)

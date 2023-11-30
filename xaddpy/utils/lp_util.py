@@ -1,35 +1,35 @@
-import warnings
+"""Defines utility functions for LP."""
+
 from abc import ABC, abstractmethod
+
 from typing import Iterable, List, Optional, Tuple, Union
+import warnings
 
 import pulp as pl
-import sympy as sp
 from pulp import const
-
-from xaddpy.utils.logger import logger
-
+import symengine.lib.symengine_wrapper as core
 try:
     import gurobipy as gp
-except:
-    pass
-
-from xaddpy.utils.global_vars import EPSILON, LP_BACKEND, REL_REVERSED_GUROBI
-from xaddpy.utils.util import relConverter, typeConverter
-
-FeasibilityTol = 1e-6       # Gurobi default feasibility tolerance
-IntFeasTol = 1e-5           # Gurobi default integer feasibility tolerance
-OptimalityEpsilon = 1e-3
-
-try:
     from gurobipy import GRB
+except:
+    GRB_SOL_STATUS_TO_PULP_STATUS = {}
+else:
     GRB_SOL_STATUS_TO_PULP_STATUS = {
         GRB.INF_OR_UNBD: pl.LpStatusUndefined,
         GRB.UNBOUNDED: pl.LpStatusUnbounded,
         GRB.OPTIMAL: pl.LpStatusOptimal,
         GRB.INFEASIBLE: pl.LpStatusInfeasible
     }
-except:
-    GRB_SOL_STATUS_TO_PULP_STATUS = {}    
+
+from xaddpy.utils.logger import logger
+from xaddpy.utils.global_vars import EPSILON, LP_BACKEND, REL_REVERSED_GUROBI
+from xaddpy.utils.symengine import BooleanVar, RandomVar
+from xaddpy.utils.util import relConverter, typeConverter
+
+FeasibilityTol = 1e-6       # Gurobi default feasibility tolerance
+IntFeasTol = 1e-5           # Gurobi default integer feasibility tolerance
+OptimalityEpsilon = 1e-3
+VAR_TYPE = core.Symbol | BooleanVar | RandomVar
 
 
 class GUROBI(pl.GUROBI):
@@ -105,7 +105,7 @@ class GUROBI(pl.GUROBI):
         lp.solverModel.update()
 
     def get_gurobi_expr(
-            self, expr: Union[sp.core.numbers.Number, int, float, pl.LpAffineExpression, pl.LpVariable]
+            self, expr: Union[core.Number, int, float, pl.LpAffineExpression, pl.LpVariable]
     ):
         if isinstance(expr, pl.LpAffineExpression):
             return self.pulp_expr_to_gurobi(expr)
@@ -130,7 +130,7 @@ class BasePULPModel(ABC):
         self._model = None
         self._solver: pl.LpSolver = kwargs.get('backend', pl.LpSolverDefault)
         self._status = None
-        self.sympy_to_pulp = {}
+        self.sym_to_pulp = {}
         self.epsilon = kwargs.get('epsilon', EPSILON)
         self._var_to_bound = kwargs.get('var_to_bound', {})  # sympy variable to its bound
         self._name_to_var = {}
@@ -222,8 +222,8 @@ class Model(BasePULPModel):
     def set_model_name(self, name: str):
         self._model.name = name
     
-    def set_sympy_to_pulp_dict(self, sp_to_pulp_dict: dict):
-        self.sympy_to_pulp = sp_to_pulp_dict
+    def set_sym_to_pulp_dict(self, sym_to_pulp_dict: dict):
+        self.sym_to_pulp = sym_to_pulp_dict
 
     def setAttr(self, attrname: str, newval):
         if attrname[0] != '_':
@@ -351,7 +351,7 @@ class GurobiModel(Model):
     def addDecNodeIndicatorConstr(
             self,
             dec: int,
-            expr: sp.core.relational.Relational,
+            expr: core.Rel,
             size: Optional[int] = None,
             *args,
             **kwargs,
@@ -362,11 +362,11 @@ class GurobiModel(Model):
 
         Args:
               dec (int): The integer decision ID
-              expr (Relational): The associated sympy expression in canonical form
+              expr (Rel): The associated sympy expression in canonical form
               size (int): (if provided) The size of the dataset
         """
         rel = type(expr)
-        if rel == sp.core.relational.Eq:
+        if rel == core.Equality:
             raise NotImplementedError(
                 "Equality constraints are not supported yet. It can always be reformulated."
             )
@@ -376,7 +376,7 @@ class GurobiModel(Model):
     def _addDecNodeIndicatorConstrIneq(
             self,
             dec: int,
-            expr: sp.core.relational.Relational,
+            expr: core.Rel,
             size: Optional[int] = None,
             *args,
             **kwargs,
@@ -387,7 +387,7 @@ class GurobiModel(Model):
 
         Args:
               dec (int): The integer decision ID
-              expr (Relational): The associated sympy expression in canonical form
+              expr (Rel): The associated symengine expression in canonical form
               size (int): (if provided) The size of the dataset
         """
         lhs, rel, rhs = expr.lhs, type(expr), expr.rhs
@@ -433,8 +433,8 @@ class GurobiModel(Model):
             self,
             dec: int,
             node_id: int,
-            low: Union[int, sp.Basic],
-            high: Union[int, sp.Basic],
+            low: Union[int, core.Basic],
+            high: Union[int, core.Basic],
             size: Optional[int] = None,
             *args,
             **kwargs,
@@ -502,7 +502,7 @@ def is_val(x, val) -> bool:
 
 
 def convert_to_pulp_expr(
-        expr: sp.Basic,
+        expr: core.Basic,
         model: Model,
         incl_bound: bool = True,
         binary: bool = False,
@@ -512,7 +512,7 @@ def convert_to_pulp_expr(
     An expression can be a simple linear expression or linear inequality.
 
     Args:
-        expr (sympy.Basic): SymPy expression
+        expr (core.Basic): SymEngine expression
         model (lp_util.PULPModel): PULP model class
         incl_bound (bool, optional): _description_. Defaults to True.
         binary (bool, optional): Is binary variable? Defaults to False.
@@ -525,22 +525,22 @@ def convert_to_pulp_expr(
     Returns:
         _type_: _description_
     """
-    sympy2pulp = model.sympy_to_pulp
+    sym2pulp = model.sym_to_pulp
 
     # If cached, return immediately
-    if data_idx is None and expr in sympy2pulp:
-        return sympy2pulp[expr]
-    elif data_idx is not None and (expr, data_idx) in sympy2pulp:
-        return sympy2pulp[(expr, data_idx)]
+    if data_idx is None and expr in sym2pulp:
+        return sym2pulp[expr]
+    elif data_idx is not None and (expr, data_idx) in sym2pulp:
+        return sym2pulp[(expr, data_idx)]
     
     # Recursively convert Sympy expression to PULP one
-    if isinstance(expr, sp.Number) and not isinstance(expr, sp.core.numbers.NaN):
+    if isinstance(expr, core.Number) and not isinstance(expr, core.NaN):
         return typeConverter[type(expr)](expr)
 
-    elif isinstance(expr, sp.core.numbers.NaN):
+    elif isinstance(expr, core.NaN):
         return float('inf')
 
-    elif isinstance(expr, sp.Symbol):
+    elif isinstance(expr, VAR_TYPE):
         if model is None:
             raise ValueError
 
@@ -550,9 +550,9 @@ def convert_to_pulp_expr(
         if var is not None:
             return var
 
-        if expr._assumptions.get('bool', False) and binary:
+        if isinstance(expr, BooleanVar) and binary:
             var = model.addVar(name=var_str, vtype=pl.LpBinary)
-        elif expr._assumptions.get('bool', False):
+        elif isinstance(expr, BooleanVar):
             var = model.addVar(lb=0, ub=1, name=var_str, vtype=pl.LpContinuous)
         elif incl_bound:
             bound = model._var_to_bound.get(expr, (float('-inf'), float('inf')))
@@ -569,9 +569,9 @@ def convert_to_pulp_expr(
                                 data_idx=data_idx) for arg_i in expr.args]
 
     # Operation between args0 and args1 is either Add or Mul
-    if isinstance(expr, sp.Add):
+    if isinstance(expr, core.Add):
         ret = pl.lpSum(res)
-    elif isinstance(expr, sp.Mul):
+    elif isinstance(expr, core.Mul):
         ret = 1
         for t in res:
             ret *= t
@@ -580,15 +580,15 @@ def convert_to_pulp_expr(
 
     # Store in cache
     if data_idx is None:
-        sympy2pulp[expr] = ret
+        sym2pulp[expr] = ret
     else:
-        sympy2pulp[(expr, data_idx)] = ret
+        sym2pulp[(expr, data_idx)] = ret
     return ret
 
 
 def convert_rhs(
         m: Model,
-        expr_or_node_id: Union[sp.Basic, int],
+        expr_or_node_id: Union[core.Basic, int],
         data_idx: Optional[int] = None,
         incl_bound: bool = True
 ):
@@ -605,12 +605,12 @@ def convert_rhs(
 
 
 def set_equality_constraint(var, rhs, pl_model, incl_bound=False):
-    if isinstance(var, sp.Basic):
+    if isinstance(var, core.Basic):
         pl_var = convert_to_pulp_expr(var, pl_model, incl_bound=incl_bound)
     else:
         pl_var = var
 
-    if isinstance(rhs, sp.Basic):
+    if isinstance(rhs, core.Basic):
         rhs = convert_to_pulp_expr(rhs, pl_model, incl_bound=incl_bound)
 
     pl_model.addConstr(pl_var == rhs, f"Equality_constraint_for_{str(pl_var)}")

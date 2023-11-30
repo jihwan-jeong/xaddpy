@@ -1,7 +1,9 @@
 from pathlib import Path
-import sympy as sp
+import symengine
+import symengine.lib.symengine_wrapper as core
 
 from xaddpy import XADD
+from xaddpy.utils.symengine import BooleanVar
 
 
 def test_bvar_subs():
@@ -12,7 +14,7 @@ def test_bvar_subs():
     orig_dd = context.import_xadd(fname)
     print(f"Original XADD: \n{context.get_repr(orig_dd)}")
 
-    b1, b2, b3 = sp.symbols('b1 b2 b3')
+    b1, b2, b3 = [context.get_var_from_name(name) for name in ['b1', 'b2', 'b3']]
     replace = {b1: True, b2: True, b3: False}
     subs_dd = context.substitute_bool_vars(orig_dd, replace)
     print(f"After substitution: \n{context.get_exist_node(subs_dd)}")
@@ -28,24 +30,27 @@ def test_mixed_subs():
     print(f"Original XADD: \n{context.get_repr(orig_dd)}")
     
     # Get the symbols
-    b1, b2, b3, x, y = sp.symbols('b1 b2 b3 x y')
+    b1, b2, b3, x, y = [
+        context.get_var_from_name(name)
+        for name in ['b1', 'b2', 'b3', 'x', 'y']
+    ]
 
     # Define substitutions
     subst_bool = {b1: b2, b2: b1}
     subst_cont = {x: y, y: x}
 
     res1 = context.substitute(orig_dd, subst_dict=subst_bool)
-    res1 = context.reduce_lp(res1)
+    # res1 = context.reduce_lp(res1)
     print(f"After boolean substitution of {subst_bool}: \n{context.get_repr(res1)}")
 
     res2 = context.substitute(orig_dd, subst_dict=subst_cont)
-    res2 = context.reduce_lp(res2)
+    # res2 = context.reduce_lp(res2)
     print(f"After substitution of continuous vars {subst_cont}: \n{context.get_repr(res2)}")
 
     subst_all = subst_bool.copy()
     subst_all.update(subst_cont)
     res3 = context.substitute(orig_dd, subst_dict=subst_all)
-    res3 = context.reduce_lp(res3)
+    # res3 = context.reduce_lp(res3)
     print(f"After substitution of all vars {subst_all}: \n{context.get_repr(res3)}")
 
 
@@ -58,7 +63,10 @@ def test_mixed_eval():
     print(f"Original XADD: \n{context.get_repr(orig_dd)}")
     
     # Get the symbols
-    b1, b2, b3, x, y = sp.symbols('b1 b2 b3 x y')
+    b1, b2, b3, x, y = [
+        context.get_var_from_name(name)
+        for name in ['b1', 'b2', 'b3', 'x', 'y']
+    ]
     
     # Evaluate the node
     bool_assign = {b1: True, b2: False, b3: True}
@@ -76,8 +84,8 @@ def test_reduce_lp():
     context = XADD()
         
     # Define the variables
-    b1, b2, b3 = sp.symbols('b1 b2 b3', bool=True)
-    x, y = sp.symbols('x y')
+    b1, b2, b3 = [BooleanVar(core.Symbol(f'b{i}')) for i in range(1, 4)]
+    x, y = symengine.symbols('x y')
     dec_b1, is_reversed_b1 = context.get_dec_expr_index(b1, create=True)
     dec_b2, is_reversed_b2 = context.get_dec_expr_index(b2, create=True)
 

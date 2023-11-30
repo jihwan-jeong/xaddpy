@@ -2,12 +2,12 @@ from typing import Optional, cast
 
 import psutil
 import pulp as pl
-import sympy as sp
-import sympy.core.relational as relational
+import symengine.lib.symengine_wrapper as core
 
 from xaddpy.utils.global_vars import LP_BACKEND, REL_NEGATED, REL_TYPE
 from xaddpy.utils.logger import logger
 from xaddpy.utils.lp_util import Model, convert_to_pulp_expr
+from xaddpy.utils.symengine import BooleanVar
 from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 
 default_check_redundancy = True
@@ -74,7 +74,7 @@ class LocalReduceLP:
 
     def flush_caches(self):
         self.lp._lhs_expr_to_pulp.clear()
-        self.lp._sympy_to_pulp.clear()
+        self.lp._sym_to_pulp.clear()
 
     def reduce_lp_v2(self, node_id: int, test_dec: set, redundancy: bool) -> int:
         """Performs reduce_lp method on the given node and returns the (potentially) reduced node ID
@@ -298,8 +298,8 @@ class LP:
 
         # Variable management
         self._var_set = set()
-        self.model.set_sympy_to_pulp_dict(self.context._sympy_to_pulp)
-        self._sympy_to_pulp = self.context._sympy_to_pulp
+        self.model.set_sym_to_pulp_dict(self.context._sym_to_pulp)
+        self._sym_to_pulp = self.context._sym_to_pulp
         self._lhs_expr_to_pulp = {}
 
     @property
@@ -334,8 +334,9 @@ class LP:
         dec = dec if is_true else -dec
 
         # Handle relational conditionals
-        if isinstance(dec_expr, relational.Rel):
-            lhs, rel, rhs = dec_expr.lhs, REL_TYPE[type(dec_expr)], dec_expr.rhs
+        if isinstance(dec_expr, core.Rel):
+            lhs, rhs = dec_expr.args
+            rel = REL_TYPE[type(dec_expr)]
             if not is_true:
                 rel = REL_NEGATED[rel]
             
@@ -348,7 +349,7 @@ class LP:
                 self.model.addConstr(lhs_pulp <= 0, name=f'dec({dec})')
         
         # Handle Boolean decisions
-        elif isinstance(dec_expr, sp.Symbol) and (dec_expr._assumptions.get('bool', False)):
+        elif isinstance(dec_expr, BooleanVar):
             bool_pulp = self.convert_expr(dec_expr)
             if is_true:
                 self.model.addConstr(bool_pulp == 1, name=f'dec({dec})')
@@ -418,8 +419,8 @@ class LP:
             negated = True if dec < 0 else False
 
             dec_expr = self.context._id_to_expr[-dec] if negated else self.context._id_to_expr[dec]
-            if isinstance(dec_expr, relational.Rel):
-                lhs, rel = dec_expr.lhs, REL_TYPE[type(dec_expr)]
+            if isinstance(dec_expr, core.Rel):
+                lhs, rel = dec_expr.args[0], REL_TYPE[type(dec_expr)]
                 lhs_pulp = self.convert_expr(lhs)
                 
                 if negated: rel = REL_NEGATED[rel]

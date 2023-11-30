@@ -95,7 +95,7 @@ def _build_milp(
         x = m.addVar(lb=lb, ub=ub,
                      vtype=pl.LpBinary if is_binary else pl.LpContinuous,
                      name=str(v))
-        m.sympy_to_pulp[v] = x
+        m.sym_to_pulp[v] = x
 
     # Handle equality constraints first
     # Then, substitute these variables to eliminate them

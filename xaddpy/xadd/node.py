@@ -1,8 +1,10 @@
-import warnings
-import sympy.core.relational as relational
-import sympy
-from sympy import oo
 import abc
+from typing import Union
+import warnings
+
+import symengine.lib.symengine_wrapper as core
+
+from xaddpy.utils.symengine import BaseVar
 
 try:
     from xaddpy.utils.graph import Graph
@@ -61,11 +63,11 @@ class Node(metaclass=abc.ABCMeta):
     
 
 class XADDTNode(Node):
-    def __init__(self, expr: sympy.Basic, annotation=None, context=None):
+    def __init__(self, expr: core.Basic, annotation=None, context=None):
         """
         A leaf XADD node implementation. Annotation can be tracked. Need to provide integer ids for
         leaf expression, node id, and annotation (if not None).
-        :param expr:            (sympy.Basic) XADDTNode receives symbolic expression not integer id
+        :param expr:            (core.Basic) XADDTNode receives symbolic expression not integer id
         :param annotation:        (int)
         """
         # Link the node with XADD
@@ -90,19 +92,21 @@ class XADDTNode(Node):
     def set(self, expr, annotation):
         """
         Set expression and annotation.
-        :param expr:        (sympy.Basic) Symbolic expression
+        :param expr:        (core.Basic) Symbolic expression
         :param annotation:    (int) id of annotation
         """
         self.expr = expr
         self._annotation = annotation
 
     @property
-    def expr(self) -> sympy.Basic:
+    def expr(self) -> Union[core.Basic, BaseVar]:
         return self._expr
 
     @expr.setter
-    def expr(self, expr: sympy.Basic):
-        assert isinstance(expr, sympy.Basic), "expr should be a Sympy object for XADDTNode!"
+    def expr(self, expr: Union[core.Basic, BaseVar]):
+        assert isinstance(expr, Union[core.Basic, BaseVar]), (
+            "expr should be a symengine object for XADDTNode!"
+        )
         self._expr = expr
 
     @property
@@ -115,7 +119,7 @@ class XADDTNode(Node):
 
     def collect_vars(self):
         """
-        Updates the set containing all sympy Symbols.
+        Updates the set containing all symengine Symbols.
         """
         return self.expr.free_symbols.copy()
 
@@ -194,7 +198,7 @@ class XADDINode(Node):
     def __init__(self, dec, low=None, high=None, context=None):
         """
         Basic decision node of a tree case function.
-        The value is a Sympy inequality expression, and the low and the high branches correspond to
+        The value is a symengine inequality expression, and the low and the high branches correspond to
         False and True, respectively. Each node will have a unique identifier (integer) stored in a dictionary
         as an attribute in a XADD object.
         :param dec:     (int) Decision expression in a canonical form (rhs is a number, lhs contains variables)
@@ -278,7 +282,7 @@ class XADDINode(Node):
         low_vars = low.collect_vars()
         high_vars = high.collect_vars()
         expr = self._context._id_to_expr[self.dec]
-        var_set.update(expr.free_symbols)
+        var_set.update(expr.free_symbols.copy())
         var_set.update(low_vars)
         var_set.update(high_vars)
 

@@ -1,10 +1,11 @@
+import symengine.lib.symengine_wrapper as core
+
 from xaddpy.xadd.xadd import XADD
-import sympy as sp
 
 
 def test_xadd():
     context = XADD()
-    x, y = sp.S('x'), sp.S('y')
+    x, y = core.S('x'), core.S('y')
     """
     Create a node 
         ([x - y - 5 <= 0]
@@ -14,7 +15,7 @@ def test_xadd():
     """
     dec_expr1 = x - y <= 5
     
-    xadd_as_list1 = [dec_expr1, [x ** 2], [sp.S(10)]]       # constant numbers should be passed through sympy.S()
+    xadd_as_list1 = [dec_expr1, [x ** 2], [core.S(10)]]       # constant numbers should be passed through sympy.S()
     node1: int = context.build_initial_xadd(xadd_as_list1)       # This method recursively builds an XADD node given a nested list of expressions 
     print(f"Node 1:\n{context.get_exist_node(node1)}")
     """
@@ -26,8 +27,8 @@ def test_xadd():
     """
     dec_expr2 = x + 2 * y <= 0
     dec_id2, is_reversed = context.get_dec_expr_index(dec_expr2, create=True)
-    high: int = context.get_leaf_node(sp.S(- 2) * y)        # You can instantiate a leaf node by passing the expression
-    low: int = context.get_leaf_node(sp.S(3) * x)
+    high: int = context.get_leaf_node(core.S(- 2) * y)        # You can instantiate a leaf node by passing the expression
+    low: int = context.get_leaf_node(core.S(3) * x)
     if is_reversed:                                     # In case the canonical expression associated with `dec_id` is reversed,
         tmp = low; low = high; high = tmp               # swap low and high
     node2: int = context.get_internal_node(dec_id=dec_id2, low=low, high=high)

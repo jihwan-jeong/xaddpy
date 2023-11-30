@@ -1,5 +1,5 @@
 import sympy
-import sympy.core.relational as relational
+import symengine.lib.symengine_wrapper as core
 from sympy.codegen.rewriting import optimize, optims_c99
 from sympy.logic import boolalg
 
@@ -10,9 +10,9 @@ def log1p(x: sympy.Basic):
     return log1p
 
 
-REL_TYPE = {relational.LessThan: '<=', relational.StrictLessThan: '<',
-            relational.GreaterThan: '>=', relational.StrictGreaterThan: '>',
-            relational.Equality: '==', relational.Unequality: '!='}
+REL_TYPE = {core.LessThan: '<=', core.StrictLessThan: '<',
+            core.GreaterThan: '>=', core.StrictGreaterThan: '>',
+            core.Equality: '==', core.Unequality: '!='}
 RELATIONAL_OPERATOR = {val: key for key, val in REL_TYPE.items()}
 REL_REVERSED = {'>': '<', '<': '>', '>=': '<=', '<=': '>='}
 REL_NEGATED = {'>': '<=', '<': '>=', '>=': '<', '<=': '>'}

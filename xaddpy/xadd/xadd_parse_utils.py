@@ -1,4 +1,4 @@
-from sympy import sympify
+from symengine import sympify
 
 
 def push(obj, l, depth):
@@ -10,11 +10,11 @@ def push(obj, l, depth):
     l.append(obj)
 
 
-def parse_xadd_grammar(s, ns):
+def parse_xadd_grammar(s):
     """Helper function for parsing a string into XADD"""
     groups = []
     depth = 0
-    sympyLst = []
+    symLst = []
     s = s.strip()
 
     try:
@@ -22,7 +22,7 @@ def parse_xadd_grammar(s, ns):
         while i < len(s):
             if s[i] == '(':
                 push([], groups, depth)
-                push([], sympyLst, depth)
+                push([], symLst, depth)
                 depth += 1
                 i += 1
             elif s[i] == ')':
@@ -45,7 +45,7 @@ def parse_xadd_grammar(s, ns):
                 s_chunk = s_chunk.strip()
                 if s_chunk:
                     push(s_chunk, groups, depth)
-                    push(sympify(s_chunk.strip('([])'), locals=ns), sympyLst, depth)
+                    push(sympify(s_chunk.strip('([])')), symLst, depth)
 
     except IndexError:
         raise ValueError('Parentheses mismatch')
@@ -53,4 +53,4 @@ def parse_xadd_grammar(s, ns):
     if depth > 0:
         raise ValueError('Parentheses mismatch')
     else:
-        return groups, sympyLst
+        return groups, symLst

@@ -1,41 +1,42 @@
 import pickle
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple
 
 import numpy as np
-import sympy
-import sympy.core.relational as relational
-from sympy import collect, sympify
-from sympy.logic.boolalg import Boolean
+import symengine
+import symengine.lib.symengine_wrapper as core
+from sympy import sympify
 from sympy.matrices import Matrix
 from sympy.solvers import solveset
 
 try:
     from gurobipy import GRB
-    relConverter = {relational.GreaterThan: GRB.GREATER_EQUAL, relational.StrictGreaterThan: GRB.GREATER_EQUAL,
-                relational.LessThan: GRB.LESS_EQUAL, relational.StrictLessThan: GRB.LESS_EQUAL,
-                relational.Eq: GRB.EQUAL}
+    relConverter = {core.GreaterThan: GRB.GREATER_EQUAL, core.StrictGreaterThan: GRB.GREATER_EQUAL,
+                core.LessThan: GRB.LESS_EQUAL, core.StrictLessThan: GRB.LESS_EQUAL,
+                core.Eq: GRB.EQUAL}
 except:
     relConverter = None
     pass
 
 from xaddpy.utils.global_vars import REL_REVERSED, REL_TYPE
+from xaddpy.utils.symengine import BooleanVar
 
-typeConverter = {sympy.Integer: int, sympy.Float: float, sympy.core.numbers.Zero: int, sympy.core.numbers.NegativeOne: int,
-                 sympy.core.numbers.One: int, sympy.core.numbers.Rational: float, sympy.core.numbers.Half: float,
-                 sympy.core.numbers.Infinity: float, sympy.core.numbers.NegativeInfinity: float}
+typeConverter = {core.Integer: int, core.Float: float, core.Zero: int, core.NegativeOne: int,
+                 core.One: int, core.Rational: float, core.Half: float,
+                 core.Infinity: float, core.NegativeInfinity: float}
 
 
 def reverse_expr(expr):
     """
-    Given a Sympy inequality expression, reverse the expression.
+    Given a symengine inequality expression, reverse the expression.
     :param expr:
     :return:
     """
 
     lhs, rhs, rel = expr.lhs, expr.rhs, REL_TYPE[type(expr)]
     rel = REL_REVERSED[rel]
-    return relational.Relational(lhs, rhs, rel)
+    raise RuntimeError("TODO: Implement this!")
+    return core.Rel(lhs, rhs, rel)
 
 
 def export_argmin_solution(fname, context, g_model, ):
@@ -122,32 +123,27 @@ def decenter_features(feature, mean):
     return feature + mean
 
 
-def get_coefficients(expr, var_lst: list):
+def get_coefficients(expr, var_lst: List[core.Symbol]) -> Tuple[float, ...]:
     """
-    Given a Sympy expression and a list of variables, return the coefficients of the variables in the expression.
+    Given a symengine expression and a list of variables,
+        returns the coefficients of the variables in the expression.
     """
-    coeffs = ()
-    for var in var_lst:
-        coeff = collect(expr, var, evaluate=False).get(var, None)
-        if coeff is None:
-            coeff = 0.0
-        coeffs += (float(coeff), )
-    return coeffs
+    coeffs = expr.as_coefficients_dict()
+    return tuple([float(coeffs.get(var, 0.0)) for var in var_lst])
 
 
-def get_multiplied_expr(expr, var):
+def get_multiplied_expr(expr: core.Basic, var: core.Symbol) -> core.Basic:
     """
-    Given a Sympy expression and a sympy variable, return the expression that is multiplied to the variable.
+    Given a symengine expression and a symbol,
+        return the expression that is multiplied to the variable.
     """
-    mul_expr = collect(expr, var, evaluate=False).get(var, 0)
-    return mul_expr
+    return expr.coeff(var)
 
 
 def is_bilinear(expr):
     """
-    Given a Sympy expression, check whether it is bilinear.
+    Given a symengine expression, check whether it is bilinear.
     """
-    terms = expr.as_ordered_terms()
     return any(map(lambda t: len(t.free_symbols) >= 2, terms))
 
 
@@ -204,25 +200,26 @@ def get_num_nodes(context, node_id):
 def get_bound(var, expr):
     """
     Return either lower bound or upper bound of 'var' from expr.
-    :param var:     (sympy.Symbol) target variable
-    :param expr:    (sympy.relational) An inequality over 'var'
-    :return:        (sympy.Basic, bool) a sympy expression along with the boolean value indicating whether an upper
+    :param var:     (core.Symbol) target variable
+    :param expr:    (core.Rel) An inequality over 'var'
+    :return:        (core.Basic, bool) a sympy expression along with the boolean value indicating whether an upper
                     or lower bound. True for upper bound, False for lower bound.
     """
-    comp = sympy.solve(expr, var)
+    comp = core.solve(expr, var)
 
-    if isinstance(comp, sympy.And):
+    if isinstance(comp, core.And):
         assert len(comp.args) == 2, "No more than 3 terms should be generated as a result of solve(ineq)!"
         args1rhs = comp.args[1].canonical.rhs             # when 'var' is the only variable in the
-        i = 0 if (args1rhs == sympy.oo) or (args1rhs == -sympy.oo) else 1
+        i = 0 if (args1rhs == core.oo) or (args1rhs == -core.oo) else 1
         comp = comp.args[i]
     else:
+        raise RuntimeError("TODO: Handle this case!")
         comp = sympy.simplify(comp)
 
     comp = comp.canonical
     # check whether upper bound or lower bound over 'var'
     # if ub: 'var' <= upper bound, else: 'var' >= lower bound
-    ub = isinstance(comp, relational.LessThan) or isinstance(comp, relational.StrictLessThan)
+    ub = isinstance(comp, core.LessThan) or isinstance(comp, core.StrictLessThan)
     expr = comp.rhs
     return expr, ub
 
@@ -231,17 +228,17 @@ def get_date_time():
     return datetime.now().strftime("%m-%d-%Y_%H-%M-%S-%f")
 
 
-def check_sympy_boolean(expr: sympy.Basic):
-    return isinstance(expr, Boolean)
+def check_sym_boolean(expr: core.Basic):
+    return isinstance(expr, core.BooleanAtom) or isinstance(expr, BooleanVar)
 
 
 def sample_rvs(
-        rvs: List[sympy.Symbol], 
+        rvs: List[core.Symbol], 
         rv_type: List[str],
         params: List[Tuple],
         rng: np.random.Generator,
         expectation: bool = False
-) -> Dict[sympy.Symbol, float]:
+) -> Dict[core.Symbol, float]:
     assert len(rvs) == len(rv_type), "Length mismatch"
     res = {}
     for rv, type, param in zip(rvs, rv_type, params):
@@ -258,26 +255,23 @@ def sample_rvs(
     return res
 
 
-def check_expr_linear(
-        expr: sympy.Basic,
-) -> bool:
-    """Checks whether the given SymPy expression is linear or not
+def check_expr_linear(expr: core.Basic) -> bool:
+    """Checks whether the given symengine expression is linear or not.
     
-    As long as there exists a term that is not linear in any variables (including bilinear),
-    the function will return False. Otherwise, this will return True.
+    If there exists a term that is nonlinear in any variables (including bilinear),
+        the function will return False. Otherwise, this will return True.
     
     Args:
-        expr (sympy.Basic): The expression to check linearity on
+        expr (core.Basic): The expression to check linearity.
 
     Returns:
-        bool: True if linear; False otherwise
+        bool: True if linear; otherwise False.
     """
-    if isinstance(expr, relational.Rel):
-        expr = expr.lhs
-    var_set = expr.free_symbols
-    for v in var_set:
-        try:
-            diff = sympy.diff(expr, v)
-            return v not in diff.free_symbols
-        except:
+    if isinstance(expr, core.Rel):
+        expr = expr.args[0]
+    coeffs_dict = expr.as_coefficients_dict()
+    for term in coeffs_dict:
+        # Nonlinear terms.
+        if not isinstance(term, core.Number) and not isinstance(term, core.Symbol):
             return False
+    return True
