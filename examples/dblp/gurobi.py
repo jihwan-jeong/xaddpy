@@ -23,7 +23,7 @@ def construct_dblp_gurobi_model(args: argparse.Namespace) -> Tuple[gp.Model, dic
     except:
         raise FileNotFoundError(f"File {args.json_file} not found")
     
-    # Create Sympy symbols for cvariables and bvariables
+    # Create symbols for cvariables and bvariables
     if len(prob_instance['cvariables0']) == 1 and isinstance(prob_instance['cvariables0'][0], int):
         cvariables0 = sym.symbols(' '.join([f'x{i}' for i in range(1, prob_instance['cvariables0'][0]+1)]))
     else:

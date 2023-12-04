@@ -132,7 +132,7 @@ class BasePULPModel(ABC):
         self._status = None
         self.sym_to_pulp = {}
         self.epsilon = kwargs.get('epsilon', EPSILON)
-        self._var_to_bound = kwargs.get('var_to_bound', {})  # sympy variable to its bound
+        self._var_to_bound = kwargs.get('var_to_bound', {})  # Variable to its bound
         self._name_to_var = {}
         self.use_solver_directly = False
 
@@ -363,7 +363,7 @@ class GurobiModel(Model):
 
         Args:
               dec (int): The integer decision ID
-              expr (Rel): The associated sympy expression in canonical form
+              expr (Rel): The associated symengine expression in canonical form
               size (int): (if provided) The size of the dataset
         """
         rel = type(expr)
@@ -535,7 +535,7 @@ def convert_to_pulp_expr(
     elif data_idx is not None and (expr, data_idx) in sym2pulp:
         return sym2pulp[(expr, data_idx)]
     
-    # Recursively convert Sympy expression to PULP one
+    # Recursively convert SymEngine expression to PULP one
     if isinstance(expr, core.Number) and not isinstance(expr, core.NaN):
         return typeConverter[type(expr)](expr)
 

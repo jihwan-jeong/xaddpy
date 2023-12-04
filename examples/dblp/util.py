@@ -503,7 +503,7 @@ def build_xadd_from_json(
         XADD.set_variable_ordering_func(var_name_rule)
     context.update_bounds(bound_dict)
 
-    # Read constraints and link with the created Sympy symbols
+    # Read constraints and link with the created SymEngine symbols
     # If an initial xadd is directly provided in str type, need also return it
     ineq_constrs = []
     eq_constr_dict = {}

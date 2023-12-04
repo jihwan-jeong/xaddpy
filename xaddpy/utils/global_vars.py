@@ -1,13 +1,13 @@
 import sympy
 import symengine.lib.symengine_wrapper as core
 from sympy.codegen.rewriting import optimize, optims_c99
-from sympy.logic import boolalg
 
 
-def log1p(x: sympy.Basic):
-    log1p = sympy.log(x + 1)
-    log1p = optimize(log1p, optims_c99)
-    return log1p
+def log1p(x: core.Basic):
+    log1p = core.log(x + 1)
+    log1p_sp = log1p._sympy_()
+    log1p = optimize(log1p_sp, optims_c99)
+    return core.sympify(log1p)
 
 
 REL_TYPE = {core.LessThan: '<=', core.StrictLessThan: '<',
@@ -21,16 +21,16 @@ REL_TYPE_SYM = {
     '>': core.StrictGreaterThan, '>=': core.GreaterThan,
     '==': core.Eq, '!=': core.Unequality,
 }
-OP_TYPE = {sympy.core.Mul: 'prod', sympy.core.Add: 'sum'}
+OP_TYPE = {core.Mul: 'prod', core.Add: 'sum'}
 UNARY_OP = {
-    'sin': sympy.sin, 'cos': sympy.cos, 'tan': sympy.tan, 'exp': sympy.exp, 'abs': abs,
-    'log': sympy.log, 'log2': lambda x: sympy.log(x, 2), 'log10': lambda x: sympy.log(x, 10),
-    'tanh': sympy.tanh, 'cosh': sympy.cosh, 'sinh': sympy.sinh,
-    'sqrt': sympy.sqrt, 'pow': lambda x, n: sympy.Pow(x, n), 
-    'floor': sympy.floor, 'ceil': sympy.ceiling,
+    'sin': core.sin, 'cos': core.cos, 'tan': core.tan, 'exp': core.exp, 'abs': abs,
+    'log': core.log, 'log2': lambda x: core.log(x, 2), 'log10': lambda x: core.log(x, 10),
+    'tanh': core.tanh, 'cosh': core.cosh, 'sinh': core.sinh,
+    'sqrt': core.sqrt, 'pow': lambda x, n: core.Pow(x, n), 
+    'floor': core.floor, 'ceil': core.ceiling,
     'log1p': log1p, '-': lambda x: -x, '+': lambda x: x,
     'int': lambda x, *args: 1 if x else 0,
-    'float': lambda x, *args: float(bool(x)) if isinstance(x, boolalg.BooleanAtom) else float(x),
+    'float': lambda x, *args: float(bool(x)) if isinstance(x, core.BooleanAtom) else float(x),
 }
 EPSILON = 1e-1
 TIMEOUT = 200

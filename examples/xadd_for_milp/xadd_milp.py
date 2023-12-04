@@ -2,6 +2,7 @@ import json
 import os.path as path
 from typing import List, Tuple
 
+import symengine as sym
 import symengine.lib.symengine_wrapper as core
 
 from xaddpy.utils.logger import logger
@@ -184,7 +185,7 @@ class XADD(_XADD):
 
                 elif i == 1:
                     assert line_split[0].lower() == 'decision variables', "Decision variables should be specified in the file"
-                    dec_vars = sp.symbols(line_split[1].strip().replace(',', ' '))
+                    dec_vars = sym.symbols(line_split[1].strip().replace(',', ' '))
                     dec_vars = list(sorted(dec_vars,
                                            key=lambda x: (float(str(x).split("_")[0][1:]), float(str(x).split("_")[1]))
                                            if len(str(x).split("_")) > 1 else float(str(x)[1:])))

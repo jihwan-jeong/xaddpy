@@ -322,8 +322,8 @@ class LP:
     def add_constraint(self, dec: int, is_true: bool):
         """
         Given an integer id for decision expression (and whether it's true or false), add the expression to LP problem.
-        1) Need to create Variable objects for each of sympy variables (if already created, retrieve from cache)
-        2) Need to convert sympy dec_expr to optlang Constraint format
+        1) Need to create Variable objects for each of SymEngine variables (if already created, retrieve from cache)
+        2) Need to convert SymEngine dec_expr to optlang Constraint format
             e.g. c1 = Constraint(x1 + x2 + x3, ub=10)
                  for x1 + x2 + x3 <= 10
 
@@ -375,9 +375,9 @@ class LP:
 
     def convert_expr(self, expr):
         """
-        Given a sympy expression 'expr', return the optlang expression which contains optlang.symbolics variables
-        instead of sympy.Symbol variables.
-        :param expr:        (sympy.Basic)
+        Given a SymEngine expression 'expr', return the optlang expression which contains optlang.symbolics variables
+        instead of core.Symbol variables.
+        :param expr:        (core.Basic)
         :return:
         """
         if expr in self._lhs_expr_to_pulp:

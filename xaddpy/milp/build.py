@@ -168,7 +168,7 @@ def check_redundancy_and_add_constraint(
             if num_data is None:
                 indicator = m.getVarByName(ind_var_name)
                 lhs = m.getVarByName(f'icvar_{lhs}')
-                if isinstance(rhs, sp.core.numbers.Number):
+                if isinstance(rhs, core.Number):
                     rhs = float(rhs)
                 elif isinstance(rhs, int):
                     rhs = m.getVarByName(f'icvar_{rhs}')
@@ -181,7 +181,7 @@ def check_redundancy_and_add_constraint(
                 for i in range(num_data):
                     indicator = m.getVarByName(f'{ind_var_name}__{i}')
                     lhs_i = m.getVarByName(f'icvar_{lhs}__{i}')
-                    if isinstance(rhs, sp.core.numbers.Number):
+                    if isinstance(rhs, core.Number):
                         rhs_i = float(rhs)
                     elif isinstance(rhs, int):
                         rhs_i = m.getVarByName(f'icvar_{rhs}__{i}')

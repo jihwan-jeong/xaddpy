@@ -15,7 +15,7 @@ def test_xadd():
     """
     dec_expr1 = x - y <= 5
     
-    xadd_as_list1 = [dec_expr1, [x ** 2], [core.S(10)]]       # constant numbers should be passed through sympy.S()
+    xadd_as_list1 = [dec_expr1, [x ** 2], [core.S(10)]]       # constant numbers should be passed through core.S()
     node1: int = context.build_initial_xadd(xadd_as_list1)       # This method recursively builds an XADD node given a nested list of expressions 
     print(f"Node 1:\n{context.get_exist_node(node1)}")
     """
