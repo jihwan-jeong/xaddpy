@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as stats
 import sympy as sp
+import symengine as sym
+import symengine.lib.symengine_wrapper as core
 from gurobipy import GRB, quicksum
 from scipy.sparse import random
 
@@ -81,12 +83,12 @@ def create_xor_dblp_and_eliminate_xs(
 ) -> Tuple[int, dict, float]:
     if n_ri_per_z == -1 or n_ri_per_z > n:        # Single z variable
         n_ri_per_z = n
-    logger.info("Create sympy decision variables and link them to XADD object")
+    logger.info("Create SymEngine decision variables and link them to XADD object")
     xs, ys, zs = setup_context_and_decision_vars(context, 
                                                  n=n,
                                                  ny=ny,
                                                  n_ri_per_z=n_ri_per_z)
-    ys = sp.Matrix(ys)
+    ys = core.Matrix(ys)
 
     # Create coeffcients of a DBLP
     logger.info("Create the coefficients of DBLP (skipping XOR constraints)")
@@ -100,7 +102,7 @@ def create_xor_dblp_and_eliminate_xs(
     dblp['dec_vars'] = list(ys) + zs
 
     # Create a Gurobi model used for computing bounds over q
-    def configure_gurobi_model(m: gp.Model, ny: int, B: sp.Matrix, b: sp.Matrix):
+    def configure_gurobi_model(m: gp.Model, ny: int, B: core.Matrix, b: core.Matrix):
         ys = m.addVars(range(ny), lb=-10, ub=10, vtype=GRB.CONTINUOUS, name='y')
 
         for i in range(B.shape[0]):
@@ -119,6 +121,7 @@ def create_xor_dblp_and_eliminate_xs(
         m.setObjective(obj, sense=GRB.MAXIMIZE)
         m.optimize()
         ub = sp.nsimplify(obj.getValue())
+        lb, ub = core.S(lb), core.S(ub)
         return lb, ub
 
     m = gp.Model('ComputeBounds')
@@ -134,7 +137,7 @@ def create_xor_dblp_and_eliminate_xs(
     subst_dict = {}
     bound_dict = {}
     for i, q_i in q_dict.items():
-        subst_in = sp.expand(c[i - 1] + (Q[i - 1, :] * ys)[0])
+        subst_in = core.expand(c[i - 1] + (Q[i - 1, :] * ys)[0])
         subst_out = q_i
         subst_dict[subst_out] = subst_in
 
@@ -183,23 +186,21 @@ def setup_context_and_decision_vars(
     nz = n - n_ri_per_z + 1
 
     # Create x and y symbols
-    xs = sp.symbols(f'x1:{nx + 1}')
-    ys = sp.symbols(f'y1:{ny + 1}')
-    zs = sp.symbols(f'z1:{nz + 1}')
+    xs = sym.symbols(' '.join([f'x{i}' for i in range(1, nx + 1)]))
+    ys = sym.symbols(' '.join([f'y{i}' for i in range(1, ny + 1)]))
+    zs = sym.symbols(' '.join([f'z{i}' for i in range(1, nz + 1)]))
 
-    ns = {str(v): v for v in xs + ys + zs}
     dec_vars = xs + ys + zs
 
     bound_dict = {}
     min_vals = [-10] * (nx + ny) + [-50] * nz
     max_vals = [10] * (nx + ny) + [50] * nz
     for i, (lb, ub) in enumerate(zip(min_vals, max_vals)):
-        lb, ub = sp.S(lb), sp.S(ub)
-        bound_dict[ns[str(dec_vars[i])]] = (lb, ub)
+        lb, ub = core.S(lb), core.S(ub)
+        bound_dict[dec_vars[i]] = (lb, ub)
 
     context.update_decision_vars(min_var_set=set(xs), free_var_set=set(ys))
     context.update_bounds(bound_dict)
-    context.update_name_space(ns)
     xs = {i: xs[i - 1] for i in range(1, len(xs) + 1)}
     return xs, ys, list(zs)
 
@@ -231,7 +232,7 @@ def create_dblp_skip_xor_constrs(n1, n2, seed, n_constrs_y=15, nz=1):
 
     # Generate Q matrix
     while True:
-        Q = random(n1, n2, density=density, data_rvs=rv, dtype=np.int, random_state=rng).A
+        Q = random(n1, n2, density=density, data_rvs=rv, dtype=int, random_state=rng).A
         if np.count_nonzero(Q) != 0:
             break
 
@@ -268,7 +269,7 @@ def create_dblp_skip_xor_constrs(n1, n2, seed, n_constrs_y=15, nz=1):
         # Generate constraints over y: By <= b
         b = rv(n_constrs_y)
         while True:
-            B = random(n_constrs_y * int(1/density), n2, density=density, data_rvs=rv, dtype=np.int, random_state=rng).A
+            B = random(n_constrs_y * int(1/density), n2, density=density, data_rvs=rv, dtype=int, random_state=rng).A
             nonzero_cnts = (B != 0).sum(axis=1)
             nonzero_rows = nonzero_cnts.nonzero()[0]
             if len(nonzero_rows) >= n_constrs_y:
@@ -291,7 +292,7 @@ def create_dblp_skip_xor_constrs(n1, n2, seed, n_constrs_y=15, nz=1):
                 break
 
     Q, B, c, d, cz, b = tuple(map(
-        lambda arr: sp.Matrix(arr), [Q, B, c, d, cz, b]
+        lambda arr: core.Matrix(arr.tolist()), [Q, B, c, d, cz, b]
     ))
 
     return dict(
@@ -310,7 +311,7 @@ def prepare_buckets(
     buckets = {}
     nx = len(xs)
     n = nx // 3
-    zs = sp.Matrix(zs)
+    zs = core.Matrix(zs)
     cz = dblp['cz']
 
     r_dict = {}
@@ -322,14 +323,14 @@ def prepare_buckets(
             r_dict[i] = return_ri_func(context, xs, zs, i, n_ri_per_z)
 
             # Create a leaf node whose expression is q_i
-            q_i = sp.symbols(f'q{i}')
+            q_i = sym.symbols(f'q{i}')
             q_i_id = context.get_leaf_node(q_i)
 
             # The function goes into the bucket is `q_i * r_i' which is bilinear
             q_i_r_i = context.apply(r_dict[i], q_i_id, 'prod')
 
             # Add linear objective over z
-            z_obj_i = context.get_leaf_node((sp.Matrix(zs).T * cz)[0] / sp.S(n))
+            z_obj_i = context.get_leaf_node((core.Matrix(zs).T * cz)[0] / core.S(n))
             obj_i = context.apply(q_i_r_i, z_obj_i, 'add')
 
             buckets[i][1].append(obj_i)
@@ -415,7 +416,7 @@ def add_y_constrs_and_costs(context: XADD, dblp: dict, res_dict: dict):
 def return_ri_func(
         context: XADD, xs: dict, zs: list, i: int, n_ri_per_z: int = 1,
 ) -> int:
-    neg_one = context.get_leaf_node(sp.S(-1))
+    neg_one = context.get_leaf_node(core.S(-1))
     x_i = context.get_leaf_node(xs[3 * i  - 2])
     x_i_1 = context.get_leaf_node(xs[3 * i - 1])
     x_i_2 = context.get_leaf_node(xs[3 * i])

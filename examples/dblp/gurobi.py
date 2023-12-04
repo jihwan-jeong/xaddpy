@@ -3,16 +3,16 @@ import json
 from typing import Tuple
 
 import gurobipy as gp
-import sympy as sp
-import sympy.core.relational as relational
+import symengine as sym
+import symengine.lib.symengine_wrapper as core
 from gurobipy import GRB, quicksum
 
-TYPE_CONVERTER = {sp.Integer: int, sp.Float: float, sp.core.numbers.Zero: int, sp.core.numbers.NegativeOne: int,
-                 sp.core.numbers.One: int, sp.core.numbers.Rational: float, sp.core.numbers.Half: float,
-                 sp.core.numbers.Infinity: float, sp.core.numbers.NegativeInfinity: float}
-REL_CONVERTER = {relational.GreaterThan: GRB.GREATER_EQUAL, relational.StrictGreaterThan: GRB.GREATER_EQUAL,
-                relational.LessThan: GRB.LESS_EQUAL, relational.StrictLessThan: GRB.LESS_EQUAL,
-                relational.Eq: GRB.EQUAL}
+TYPE_CONVERTER = {core.Integer: int, core.Float: float, core.Zero: int, core.NegativeOne: int,
+                 core.One: int, core.Rational: float, core.Half: float, core.RealDouble: float,
+                 core.Infinity: float, core.NegativeInfinity: float}
+REL_CONVERTER = {core.GreaterThan: GRB.GREATER_EQUAL, core.StrictGreaterThan: GRB.GREATER_EQUAL,
+                core.LessThan: GRB.LESS_EQUAL, core.StrictLessThan: GRB.LESS_EQUAL,
+                core.Eq: GRB.EQUAL}
 
 
 def construct_dblp_gurobi_model(args: argparse.Namespace) -> Tuple[gp.Model, dict]:
@@ -25,20 +25,19 @@ def construct_dblp_gurobi_model(args: argparse.Namespace) -> Tuple[gp.Model, dic
     
     # Create Sympy symbols for cvariables and bvariables
     if len(prob_instance['cvariables0']) == 1 and isinstance(prob_instance['cvariables0'][0], int):
-        cvariables0 = sp.symbols('x1:%s' % (prob_instance['cvariables0'][0]+1))
+        cvariables0 = sym.symbols(' '.join([f'x{i}' for i in range(1, prob_instance['cvariables0'][0]+1)]))
     else:
         cvariables0 = []
         for v in prob_instance['cvariables0']:
-            cvariables0.append(sp.symbols(v))
+            cvariables0.append(core.Symbol(v))
     if len(prob_instance['cvariables1']) == 1 and isinstance(prob_instance['cvariables1'][0], int):
-        cvariables1 = sp.symbols('y1:%s' % (prob_instance['cvariables1'][0]+1))
+        cvariables1 = sym.symbols(' '.join([f'y{i}' for i in range(1, prob_instance['cvariables1'][0]+1)]))
     else:
         cvariables1 = []
         for v in prob_instance['cvariables1']:
-            cvariables1.append(sp.symbols(v))
+            cvariables1.append(core.Symbol(v))
     cvariables = cvariables0 + cvariables1
     cvar_dim = len(cvariables)
-    ns = {str(v): v for v in cvariables}
 
     min_vals = prob_instance['min-values']
     max_vals = prob_instance['max-values']
@@ -51,24 +50,25 @@ def construct_dblp_gurobi_model(args: argparse.Namespace) -> Tuple[gp.Model, dic
     
     bound_dict = {}
     for i, (lb, ub) in enumerate(zip(min_vals, max_vals)):
-        lb, ub = sp.S(lb), sp.S(ub)
+        lb, ub = core.S(lb), core.S(ub)
         bound_dict[cvariables[i]] = (float(lb), float(ub))
     
     # Add variables
-    sp_to_grb = {}
+    sym_to_grb = {}
     for v in cvariables:
         v_grb = m.addVar(lb=bound_dict[v][0], ub=bound_dict[v][1], name=str(v), vtype=GRB.CONTINUOUS)
-        sp_to_grb[v] = v_grb
+        sym_to_grb[v] = v_grb
     m.update()
 
     # Get constraints
     ineq_constrs = []
     eq_constr_dict = {}
     for const in prob_instance['ineq-constr']:
-        const = sp.sympify(const)
-        lhs, rel, rhs = const.lhs, type(const), const.rhs
-        lhs = lhs - rhs
-        g_lhs = convert_sp_to_grb_expr(m, lhs, sp_to_grb, bound_dict)
+        const = core.sympify(const)
+        lhs, rhs = const.args
+        lhs = (lhs - rhs).expand()
+        rel = type(const)
+        g_lhs = convert_sym_to_grb_expr(m, lhs, sym_to_grb, bound_dict)
         rel = REL_CONVERTER[rel]
         if rel == GRB.LESS_EQUAL:
             constr = g_lhs <= 0
@@ -81,8 +81,8 @@ def construct_dblp_gurobi_model(args: argparse.Namespace) -> Tuple[gp.Model, dic
 
     # Set the objective
     obj = prob_instance['objective']
-    obj = sp.expand(sp.sympify(obj, locals=ns))
-    obj = convert_sp_to_grb_expr(m, obj, sp_to_grb, bound_dict)
+    obj = core.sympify(obj).expand()
+    obj = convert_sym_to_grb_expr(m, obj, sym_to_grb, bound_dict)
     m.setObjective(obj, sense=GRB.MINIMIZE)
 
     # Set some parameters
@@ -97,23 +97,23 @@ def construct_dblp_gurobi_model(args: argparse.Namespace) -> Tuple[gp.Model, dic
     return m, info_dict
 
 
-def convert_sp_to_grb_expr(
+def convert_sym_to_grb_expr(
         m: gp.Model,
-        expr: sp.Basic, 
-        sp_to_grb: dict, 
+        expr: core.Basic, 
+        sym_to_grb: dict, 
         var_to_bound: dict,
         binary: bool = False, 
         incl_bound: bool = True,
 ):
-    if expr in sp_to_grb:
-        return sp_to_grb[expr]
+    if expr in sym_to_grb:
+        return sym_to_grb[expr]
     
-    # Recursively convert Sympy expression to Gurobi expression
-    if isinstance(expr, sp.Number) and not isinstance(expr, sp.core.numbers.NaN):
+    # Recursively convert SymEngine expression to Gurobi expression
+    if isinstance(expr, core.Number) and not isinstance(expr, core.NaN):
         return TYPE_CONVERTER[type(expr)](expr)
-    elif isinstance(expr, sp.core.numbers.NaN):
+    elif isinstance(expr, core.NaN):
         return float('inf')
-    elif isinstance(expr, sp.Symbol):
+    elif isinstance(expr, core.Symbol):
         var_str = str(expr)
         v = None
         if m.getVars():
@@ -131,13 +131,13 @@ def convert_sp_to_grb_expr(
             v = m.addVar(lb=float('-inf'), ub=float('inf'), name=var_str, vtype=GRB.CONTINUOUS)
         return v
     
-    res = [convert_sp_to_grb_expr(m, arg, sp_to_grb, var_to_bound, binary, incl_bound)
+    res = [convert_sym_to_grb_expr(m, arg, sym_to_grb, var_to_bound, binary, incl_bound)
            for arg in expr.args]
     
     # Operation between args0 and args1 is either Add or Mul
-    if isinstance(expr, sp.Add):
+    if isinstance(expr, core.Add):
         ret = quicksum(res)
-    elif isinstance(expr, sp.Mul):
+    elif isinstance(expr, core.Mul):
         ret = 1
         for r in res:
             ret *= r
@@ -145,5 +145,5 @@ def convert_sp_to_grb_expr(
         raise NotImplementedError(f"Operation {expr.func} not supported")
     
     # Store in cache
-    sp_to_grb[expr] = ret
+    sym_to_grb[expr] = ret
     return ret

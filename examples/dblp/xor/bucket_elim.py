@@ -1,6 +1,6 @@
 from typing import Optional
 
-import sympy as sp
+import symengine.lib.symengine_wrapper as core
 
 from examples.xadd_for_milp.xadd_milp import XADD
 from xaddpy.utils.logger import logger
@@ -29,7 +29,7 @@ def run_symbolic_bucket_elimination(
         n_i = context.get_exist_node(h_i)
 
         # Assign h_i to a bucket (if a constant, add it to the last bucket)
-        if n_i._is_leaf and isinstance(n_i.expr, sp.core.numbers.Number):
+        if n_i._is_leaf and isinstance(n_i.expr, core.Number):
             buckets[keys[-1]][1].append(h_i)
         elif i == keys[-1]:
             buckets[i][1].append(h_i)

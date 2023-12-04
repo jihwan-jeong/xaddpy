@@ -23,6 +23,9 @@ dependencies = [
   "numpy",
   "pulp",
   "psutil",
+  "sympy",
+  "scipy",
+  "matplotlib",
 ]
 [project.urls]
 "Homepage" = "https://github.com/jihwan-jeong/xaddpy"

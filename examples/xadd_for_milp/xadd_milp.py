@@ -2,7 +2,7 @@ import json
 import os.path as path
 from typing import List, Tuple
 
-import sympy as sp
+import symengine.lib.symengine_wrapper as core
 
 from xaddpy.utils.logger import logger
 from xaddpy.utils.util import compute_rref_filter_eq_constr
@@ -99,7 +99,6 @@ class XADD(_XADD):
         """
         Read in the XADD corresponding to an LP.
         """
-        ns = {}
         xadd_str = ''
         dec_var = None
 
@@ -119,19 +118,19 @@ class XADD(_XADD):
                 elif i == 1:
                     assert line_split[0].lower() == 'decision variables', "Decision variables should be specified in the file"
                     symbols = line_split[1].strip().split(',')
-                    dec_vars = sp.symbols(symbols)
+                    dec_vars = [core.Symbol(v.strip()) for v in symbols]
                     dec_vars = list(sorted(dec_vars,
                                            key=lambda x: (float(str(x).split("_")[0][1:]), float(str(x).split("_")[1]))
                                            if len(str(x).split("_")) > 1 else float(str(x)[1:])))
-                    ns.update({str(v): v for v in dec_vars})
                     logger.info(line.strip())
                     self._free_var_set.update(dec_vars)
 
                 elif i == 2:
                     assert line_split[0].lower() == 'bounds', "Bound information should be provided"
-                    bound_dict = {ns[str(v)]: 
-                                  tuple(map(float, line_split[i+1].strip()[1:-1].replace('oo', 'inf').split(',')))
-                                  for i, v in enumerate(dec_vars)}
+                    bound_dict = {
+                        v: tuple(map(float, line_split[i+1].strip()[1:-1].replace('oo', 'inf').split(',')))
+                            for i, v in enumerate(dec_vars)
+                    }
                     self._var_to_bound.update(bound_dict)
                     logger.info(line.strip())
 
@@ -139,13 +138,11 @@ class XADD(_XADD):
                     if len(xadd_str) > 0:
                         raise ValueError
                     xadd_str = line_split[1].strip()
-                    obj = sp.symbols(line_split[0])
-                    ns.update({str(obj): obj})
 
                 elif len(line.strip()) != 0:
                     xadd_str += line
             if len(xadd_str) > 0:
-                lp = self.import_xadd(xadd_str=xadd_str, locals=ns)
+                lp = self.import_xadd(xadd_str=xadd_str)
 
         # Handle equality constraints if exist by looking at the configuration json file
         try:
@@ -155,8 +152,7 @@ class XADD(_XADD):
             raise FileNotFoundError(f"Failed to open {self._config_json_fname}")
 
         eq_constr_dict, dec_vars = compute_rref_filter_eq_constr(prob_instance['eq-constr'],
-                                                                 dec_vars,
-                                                                 locals=ns)
+                                                                 dec_vars,)
         dec_vars = [v for v in dec_vars if v not in eq_constr_dict]
 
         # LP objective node

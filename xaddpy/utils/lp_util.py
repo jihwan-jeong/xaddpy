@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import warnings
 
 import pulp as pl
@@ -111,7 +111,7 @@ class GUROBI(pl.GUROBI):
             return self.pulp_expr_to_gurobi(expr)
         elif isinstance(expr, pl.LpVariable):
             return expr.solverVar
-        elif isinstance(expr, (int, float, sp.core.numbers.Number)):
+        elif isinstance(expr, (int, float, core.Number)):
             return int(expr) if int(expr) == expr else float(expr)
 
     def pulp_expr_to_gurobi(self, expr: pl.LpAffineExpression):
@@ -200,6 +200,7 @@ class Model(BasePULPModel):
             backend: str = '',              # 'gurobi', 'pulp', 'gurobi_custom'
             sense: int = pl.LpMinimize,     # pl.LpMinimize: 1, pl.LpMaximize: -1
             msg: bool = False,
+            solver_kwargs: Dict[str, Any] = {},
             **kwargs
     ):
         # Override the backend with the default solver
@@ -207,13 +208,13 @@ class Model(BasePULPModel):
             backend = LP_BACKEND
             logger.info(f"PULP backend undefined... By default, {LP_BACKEND} is used")
         if backend.lower() == 'gurobi':
-            backend = pl.GUROBI(msg=msg, **kwargs)
+            backend = pl.GUROBI(msg=msg, **solver_kwargs)
         elif backend.lower() == 'pulp':
             # backend = pl.COIN_CMD(msg=msg, **kwargs)
-            backend = pl.GLPK_CMD(msg=msg, **kwargs)
+            backend = pl.GLPK_CMD(msg=msg, **solver_kwargs)
             backend.msg = msg
         elif backend.lower() == 'gurobi_custom':
-            backend = GUROBI(msg=msg, **kwargs)
+            backend = GUROBI(msg=msg, **solver_kwargs)
         else:
             raise NotImplementedError
         super().__init__(backend=backend, **kwargs)
@@ -390,7 +391,8 @@ class GurobiModel(Model):
               expr (Rel): The associated symengine expression in canonical form
               size (int): (if provided) The size of the dataset
         """
-        lhs, rel, rhs = expr.lhs, type(expr), expr.rhs
+        lhs, rhs = expr.args
+        rel = type(expr)
         rel = relConverter[rel]
         rev_rel = REL_REVERSED_GUROBI[rel]
 
@@ -440,9 +442,9 @@ class GurobiModel(Model):
             **kwargs,
     ):
         skip_low, skip_high = False, False
-        if low == sp.oo or low == -sp.oo:
+        if low == core.oo or low == -core.oo:
             skip_low = True
-        if high == sp.oo or high == -sp.oo:
+        if high == core.oo or high == -core.oo:
             skip_high = True
 
         ind_var_name = f'ind_{dec}'
@@ -508,7 +510,7 @@ def convert_to_pulp_expr(
         binary: bool = False,
         data_idx: Optional[int] = None,
 ):
-    """Given a sympy expression, convert it to a PULP expression. 
+    """Given a symengine expression, convert it to a PULP expression. 
     An expression can be a simple linear expression or linear inequality.
 
     Args:
@@ -592,7 +594,7 @@ def convert_rhs(
         data_idx: Optional[int] = None,
         incl_bound: bool = True
 ):
-    if isinstance(expr_or_node_id, sp.core.numbers.Number):
+    if isinstance(expr_or_node_id, core.Number):
         return float(expr_or_node_id)
     elif isinstance(expr_or_node_id, int):
         return m.getVarByName(f'icvar_{expr_or_node_id}') if data_idx is None else \

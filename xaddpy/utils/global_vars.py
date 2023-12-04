@@ -16,6 +16,11 @@ REL_TYPE = {core.LessThan: '<=', core.StrictLessThan: '<',
 RELATIONAL_OPERATOR = {val: key for key, val in REL_TYPE.items()}
 REL_REVERSED = {'>': '<', '<': '>', '>=': '<=', '<=': '>='}
 REL_NEGATED = {'>': '<=', '<': '>=', '>=': '<', '<=': '>'}
+REL_TYPE_SYM = {
+    '<': core.StrictLessThan, '<=': core.LessThan,
+    '>': core.StrictGreaterThan, '>=': core.GreaterThan,
+    '==': core.Eq, '!=': core.Unequality,
+}
 OP_TYPE = {sympy.core.Mul: 'prod', sympy.core.Add: 'sum'}
 UNARY_OP = {
     'sin': sympy.sin, 'cos': sympy.cos, 'tan': sympy.tan, 'exp': sympy.exp, 'abs': abs,

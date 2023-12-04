@@ -143,7 +143,15 @@ def run_instance(args, seed=None) -> dict:
         else:
             logger.info(f'seed: {seed}\tShould be included')
         return
+
     try:
+        # Import the resulting MILP XADD
+        context = XADD(vars(args))
+        variables, eq_constr_dict = context.import_lp_xadd(fname_xadd)
+        time_sve = 0.
+    except:
+        logger.info(f"Failed to import the XADD from {fname_xadd}.")
+        logger.info("Try to solve the problem from scratch.")
         context, eq_constr_dict, time_sve = \
                             dblp_solve.solve(
                                 solver_type=args.solver_type,
@@ -152,33 +160,29 @@ def run_instance(args, seed=None) -> dict:
                                 fname_xadd=fname_xadd,
                                 args=args,
                             )
-
-        # Import the resulting MILP XADD
+        # Reset the resulting MILP XADD
         context = XADD(vars(args))
         variables, eq_constr_dict = context.import_lp_xadd(fname_xadd)
-        obj_node_id = context.get_objective()
-        num_int_nodes, num_term_nodes = dblp_util.get_num_nodes(context, obj_node_id)
-        logger.info(f'Number of decision/terminal nodes: {num_int_nodes} / {num_term_nodes}')
+    obj_node_id = context.get_objective()
+    num_int_nodes, num_term_nodes = dblp_util.get_num_nodes(context, obj_node_id)
+    logger.info(f'Number of decision/terminal nodes: {num_int_nodes} / {num_term_nodes}')
 
-        # Compile the MILP from XADD and solve it
-        timeout = 3600
-        time_interval = 1800
-        info_dict = solve_milp(
-            context,
-            m,
-            variables,
-            eq_constr_dict,
-            verbose=True,
-            timeout=timeout,
-            time_interval=time_interval,
-            args=args,
-        )
-        time_modeling, time_milp, obj_value = info_dict['time_modeling'],\
-                                              info_dict['time_milp'],\
-                                              info_dict['obj_value']
-    except Exception as e:
-        error = True
-        logger.debug(e)
+    # Compile the MILP from XADD and solve it
+    timeout = 3600
+    time_interval = 1800
+    info_dict = solve_milp(
+        context,
+        m,
+        variables,
+        eq_constr_dict,
+        verbose=True,
+        timeout=timeout,
+        time_interval=time_interval,
+        args=args,
+    )
+    time_modeling, time_milp, obj_value = info_dict['time_modeling'],\
+                                            info_dict['time_milp'],\
+                                            info_dict['obj_value']
 
     logger.info(f"Optimal objective: {obj_value}")
 
@@ -189,13 +193,8 @@ def run_instance(args, seed=None) -> dict:
     num_constraints = len(prob_instance['ineq-constr']) + len(prob_instance['eq-constr'])
     num_local_opts = prob_instance.get('num-local-opts', None)
     num_global_opts = prob_instance.get('num-global-opts', None)
-    if error:
-        obj_value, infeasible, time_sve, time_modeling, time_milp, num_int_nodes, num_term_nodes\
-            = None, None, None, None, None, None, None
-        num_cvars_milp, num_bvars_milp, num_constrs_milp = 0, 0, 0
-    else:
-        infeasible = True if obj_value is None else False
-        num_cvars_milp, num_bvars_milp, num_constrs_milp = return_model_info(m)
+    infeasible = True if obj_value is None else False
+    num_cvars_milp, num_bvars_milp, num_constrs_milp = return_model_info(m)
     return dict(
         num_dec_vars_0=num_dec_vars_0,
         num_dec_vars_1=num_dec_vars_1,

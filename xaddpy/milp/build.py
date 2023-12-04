@@ -5,7 +5,7 @@ Note that it is required to have Gurobi installed in order to run these.
 from typing import Union, cast
 
 import pulp as pl
-import sympy as sp
+import symengine.lib.symengine_wrapper as core
 
 from xaddpy.utils.global_vars import EPSILON
 from xaddpy.utils.lp_util import (GurobiModel, convert_to_pulp_expr,
@@ -22,7 +22,7 @@ def build_milp(
         lb: float = float('-inf'),
         ub: float = float('inf'),
         binary: bool = False,
-) -> Union[int, sp.Basic]:
+) -> Union[int, core.Basic]:
     """
     Given an XADD, encode it as MILP.
 
@@ -42,14 +42,14 @@ def build_milp(
         expr = node.expr
 
         # Handle infeasibility
-        if expr == sp.oo or expr == -sp.oo:
+        if expr == core.oo or expr == -core.oo:
             handle_infeasibility(m, dec_partition)
         return expr
     
     node = cast(XADDINode, node)
     dec = node.dec
     expr = context._id_to_expr[dec]
-    assert expr.rhs == 0, "RHS should always be 0 for a canonical XADD"
+    assert expr.args[1] == 0, "RHS should always be 0 for a canonical XADD"
 
     # Add variables associated with decision expressions (indicator) and nodes
     indicator_var_name = f"ind_{dec}"

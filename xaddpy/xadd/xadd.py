@@ -39,11 +39,11 @@ def default_ordering(context, expr: core.Basic) -> int:
 
     # Decision expression consisting of continuous variables
     if isinstance(expr, core.Rel):
-        is_nonlinear = check_expr_linear(expr)
-        if is_nonlinear:
-            index = num_unique_expr + LARGE_INTEGER ** 2
-        else:
+        is_linear = check_expr_linear(expr)
+        if is_linear:
             index = num_unique_expr + LARGE_INTEGER
+        else:
+            index = num_unique_expr + LARGE_INTEGER ** 2
     # Boolean decisions
     else:
         index = num_unique_expr
@@ -571,7 +571,7 @@ class XADD:
         
         dec_expr1 = expr <= 0
         dec1, is_reversed = self.get_dec_expr_index(dec_expr1, create=True)
-        dec_expr2 = sympy.Eq(expr, 0)
+        dec_expr2 = core.Eq(expr, 0)
         low = self.ONE        
         high = self.get_dec_node(dec_expr2, core.S(-1), core.S(0))
         
@@ -903,14 +903,12 @@ class XADD:
 
             # The canonical form of decision expression: (lhs - rhs 'rel' 0)
             # Handle relational operations
+            lhs = (n1.expr - n2.expr).expand()
             if op in RELATIONAL_OPERATOR:
-                lhs = n1.expr - n2.expr
                 expr = RELATIONAL_OPERATOR[op](lhs, 0)      # can handle '==' (Equality), '!=' (Unequality), '>', '>=', '<', '<='
             # Handle min, max operations
             else:
-                lhs = n1.expr - n2.expr
-                rhs = 0
-                expr = lhs <= rhs
+                expr = core.LessThan(lhs, 0)
 
             # handle tautological cases
             if expr == core.true:        
@@ -983,7 +981,7 @@ class XADD:
             expr = node.expr
             if len(expr.free_symbols.intersection(set(subst_dict.keys()))) > 0:
                 expr = expr.xreplace({sub_out: core.S(sub_in) for sub_out, sub_in in subst_dict.items()})
-                expr = core.expand(expr)
+                expr = expr.expand()
             annotation = node._annotation
             return self.get_leaf_node(expr, annotation)
 
@@ -1232,13 +1230,15 @@ class XADD:
             self, leaf_val: core.Basic, var: core.Symbol, xadd: int
     ) -> int:
         """
-        Substitute XADD into 'var' that occurs in 'val' (a Sympy expression). 
+        Substitute XADD into 'var' that occurs in 'val' (a SymEngine expression). 
         This is only called for leaf expressions.
 
-        :param leaf_val:    (core.Basic) sympy expression
-        :param var:         (core.Symbol) variable to substitute
-        :param xadd:        (int) integer that indicates the XADD to substitute into 'var'
-        :return:
+        Args:
+            leaf_val:    (core.Basic) symengine expression.
+            var:         (core.Symbol) variable to substitute.
+            xadd:        (int) integer that indicates the XADD to substitute into 'var'.
+        Returns:
+            int: The resulting XADD node ID.
         """
         # Get the root node
         node = self.get_exist_node(xadd)
@@ -1247,18 +1247,18 @@ class XADD:
         if node.is_leaf():
             node = cast(XADDTNode, node)
             xadd_leaf_expr = node.expr
-            # expr = leaf_val.subs(var, xadd_leaf_expr)
             expr = leaf_val.xreplace({var: xadd_leaf_expr})
             expr = core.expand(expr)
 
             # Special treatment for oo, -oo
             try:
-                two_terms = expr.as_two_terms()
-                if isinstance(two_terms[0], sympy.core.Number):
-                    if two_terms[0] == sympy.oo:
-                        expr = sympy.oo
-                    elif two_terms[0] == -sympy.oo:
-                        expr = -sympy.oo
+                # TODO: Need to update this...
+                args = expr.args
+                if len(args) > 0 and isinstance(expr.args[0], core.Number):
+                    if args[0] == core.oo:
+                        expr = core.oo
+                    elif args[0] == -core.oo:
+                        expr = -core.oo
             except AttributeError as e:
                 pass
             except Exception as e:
@@ -1293,7 +1293,7 @@ class XADD:
     def get_leaf_node(
             self, expr: core.Basic, annotation: Optional[int] = None, **kwargs
     ) -> int:
-        """Returns the ID of the leaf node with given SymPy expression and annotation.
+        """Returns the ID of the leaf node with given SymEngine expression and annotation.
 
         Note that if a new random variable is added within this method,
         kwargs should have the necessary parameters to specify the random variable.
@@ -1305,7 +1305,7 @@ class XADD:
         If this information was not provided, this method will result in an assertion error.
         
         Args:
-            expr (core.Basic): The SymPy expression associated with the leaf node.
+            expr (core.Basic): The SymEngine expression associated with the leaf node.
             annotation (Optional[int], optional): The node ID of the annotation.
         
         Returns:
@@ -1371,7 +1371,6 @@ class XADD:
         Returns:
 
         """
-        # sympy expr is already alphabetically ordered
         is_reversed = False
 
         # Handle tautology: simply return without doing anything
@@ -1397,34 +1396,37 @@ class XADD:
         
         # Always make 'lhs - rhs <= 0' as canonical expression
         lhs, rhs, rel = expr.args[0], expr.args[1], REL_TYPE[type(expr)]
-        lhs = lhs - rhs
+        lhs = (lhs - rhs).expand()
 
         if rel == '>=' or rel == '>':
             is_reversed = True
             rel = '<=' if rel == '>=' else '<'
 
         # Divide lhs by the coefficient of the first term and make it positive.
-        sorted_args = tuple(
-            sorted(lhs.args, 
-                   key=lambda x: ''.join([str(x) for x in x.free_symbols]) 
-                        if x.free_symbols
-                        else str(x)
-            ) 
-        )
-        coeff_first_term = sorted_args[0]
-        if isinstance(coeff_first_term, core.Number):
-            # TODO: the following does not guarantee to return the lowest degree term...
-            # But at least will be canonical?. Need to check.
-            coeff_first_term = sorted_args[1]
+        if not lhs.is_Symbol:
+            sorted_args = tuple(
+                sorted(lhs.args, 
+                    key=lambda x: ''.join([str(x) for x in x.free_symbols]) 
+                            if x.free_symbols
+                            else str(x)
+                ) 
+            )
+            coeff_first_term = sorted_args[0]
+            if isinstance(coeff_first_term, core.Number):
+                # TODO: the following does not guarantee to return the lowest degree term...
+                # But at least will be canonical?. Need to check.
+                coeff_first_term = sorted_args[1]
 
-        if isinstance(coeff_first_term, core.Mul):
-            arg1 = coeff_first_term.args[0]
-            if isinstance(arg1, core.Number):
-                lhs = (lhs / arg1).expand()
-                # Divided by a negative number changes the direction of inequality
-                if arg1 < 0 and rel in ('<=', '<', '>', '>='):
-                    is_reversed = True if not is_reversed else False
+            if isinstance(coeff_first_term, core.Mul):
+                arg1 = coeff_first_term.args[0]
+                if isinstance(arg1, core.Number):
+                    lhs = (lhs / arg1).expand()
+                    # Divided by a negative number changes the direction of inequality
+                    if arg1 < 0 and rel in ('<=', '<', '>', '>='):
+                        is_reversed = True if not is_reversed else False
 
+            # If possible, use integer coefficients.
+            lhs = sum([(int(c) * t) if (int(c) == float(c)) else (c * t) for t, c in lhs.as_coefficients_dict().items()])
         expr = RELATIONAL_OPERATOR[rel](lhs, 0)
         return expr, is_reversed
 
@@ -1931,11 +1933,17 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
 
     @property
     def _lower_bound(self) -> Union[float, int]:
-        return self.bound_dict[self._var][0]
+        lb = self.bound_dict[self._var][0]
+        if lb == float('-inf'):
+            return -oo
+        return lb
 
     @property
     def _upper_bound(self) -> Union[float, int]:
-        return self.bound_dict[self._var][1]
+        ub = self.bound_dict[self._var][1]
+        if ub == float('inf'):
+            return oo
+        return ub
 
     def process_xadd_leaf(
             self, decisions: list, decision_values: list, leaf_val: core.Basic
@@ -1973,10 +1981,10 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
             if (dec_expr in self._context._bool_var_set) or (self._var not in dec_expr.atoms()):
                 target_var_indep_decisions.append((dec_expr, is_true))
                 continue
-
-            lhs, rhs, gt = dec_expr.args[0], dec_expr.args[1], isinstance(dec_expr, relational.GreaterThan)
-            gt = (gt and is_true) or (not gt and not is_true)
-            expr = lhs >= rhs if gt else lhs <= rhs
+            lhs, rhs = dec_expr.args
+            lt = isinstance(dec_expr, core.LessThan)
+            lt = (lt and is_true) or (not lt and not is_true)
+            expr = lhs <= rhs if lt else lhs >= rhs
 
             # Get bounds over 'var'
             bound_expr, upper = xaddpy.utils.util.get_bound(self._var, expr)
@@ -2007,12 +2015,11 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
         # Ensure lower bounds are smaller than upper bounds
         for e1 in lower_bound:
             for e2 in upper_bound:
-                comp = (e2 - e1 >= 0)   # ub - lb
+                comp = core.LessThan((e1 - e2).expand(), 0)     # lb - ub <= 0
                 if comp == core.true or \
                         e2 == oo or e1 == -oo:
                     continue
                 target_var_indep_decisions.append((comp, True))
-                assert isinstance(comp, relational.GreaterThan)
 
         # Substitute lower and upper bounds into leaf node
         eval_lower = self._context.substitute_xadd_for_var_in_expr(leaf_val,
@@ -2137,8 +2144,13 @@ class XADDLeafMinOrMax(XADDLeafOperation):
         self._running_result: int = -1
         self.annotate = annotate
         if var in bound_dict:
-            self._lower_bound: Union[int, float, core.Number] = bound_dict[var][0]
-            self._upper_bound: Union[int, float, core.Number] = bound_dict[var][1]
+            lb = bound_dict[var][0]
+            ub = bound_dict[var][1]
+            if lb == float('-inf'):
+                lb = -oo
+            if ub == float('inf'):
+                ub = oo
+            self._lower_bound, self._upper_bound = lb, ub
         else:
             print("No domain bounds over {} are provided... using -oo and oo as lower and upper bounds.".format(var))
             self._lower_bound: Union[int, float, core.Number] = -oo
@@ -2179,9 +2191,10 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                 target_var_indep_decisions.append((dec_expr, is_true))
                 continue
 
-            lhs, rhs, gt = dec_expr.args[0], dec_expr.args[1], isinstance(dec_expr, core.GreaterThan)
-            gt = (gt and is_true) or (not gt and not is_true)
-            expr = lhs >= rhs if gt else lhs <= rhs
+            lhs, rhs = dec_expr.args[0], dec_expr.args[1]
+            lt = isinstance(dec_expr, core.LessThan)
+            lt = (lt and is_true) or (not lt and not is_true)
+            expr = lhs <= rhs if lt else lhs >= rhs
 
             # Get bounds over 'var'
             bound_expr, upper = xaddpy.utils.util.get_bound(self._var, expr)
@@ -2208,14 +2221,11 @@ class XADDLeafMinOrMax(XADDLeafOperation):
         # Ensure lower bounds are smaller than upper bounds
         for e1 in lower_bound:
             for e2 in upper_bound:
-                comp = (e2 - e1 >= 0)   # ub - lb
+                comp = core.LessThan((e1 - e2).expand(), 0)     # lb - ub <= 0
                 if comp == core.true or \
                         e2 == oo or e1 == -oo:
                     continue
                 target_var_indep_decisions.append((comp, True))
-                assert isinstance(comp, core.GreaterThan)
-                # comp_lhs, is_reversed = self._context.clean_up_expr(comp.args[0], factor=True)
-                # self._context._temp_ub_lb_cache.add(comp_lhs if not is_reversed else -comp_lhs)
 
         # Substitute lower and upper bounds into leaf node
         eval_lower = self._context.substitute_xadd_for_var_in_expr(leaf_val, var=self._var, xadd=xadd_lower_bound)

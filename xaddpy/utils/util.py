@@ -3,10 +3,10 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 import numpy as np
-import symengine
+import sympy as sp
 import symengine.lib.symengine_wrapper as core
-from sympy import sympify
-from sympy.matrices import Matrix
+from symengine.lib.symengine_wrapper import Matrix
+
 from sympy.solvers import solveset
 
 try:
@@ -18,31 +18,38 @@ except:
     relConverter = None
     pass
 
-from xaddpy.utils.global_vars import REL_REVERSED, REL_TYPE
-from xaddpy.utils.symengine import BooleanVar
+from xaddpy.utils.global_vars import REL_REVERSED, REL_TYPE, REL_TYPE_SYM
 
-typeConverter = {core.Integer: int, core.Float: float, core.Zero: int, core.NegativeOne: int,
-                 core.One: int, core.Rational: float, core.Half: float,
-                 core.Infinity: float, core.NegativeInfinity: float}
+typeConverter = {
+    core.Integer: int, core.Float: float, core.Zero: int, core.NegativeOne: int,
+    core.One: int, core.Rational: float, core.Half: float, core.RealDouble: float,
+    core.Infinity: lambda x: float(sp.S(x)),
+    core.NegativeInfinity: lambda x: float(sp.S(x)),
+}
 
 
-def reverse_expr(expr):
+def reverse_expr(expr: core.Rel):
     """
-    Given a symengine inequality expression, reverse the expression.
-    :param expr:
+    Given a symengine relational expression, reverse the expression.
+
+    Args:
+        expr (core.Rel): A symengine relational expression.
     :return:
     """
-
-    lhs, rhs, rel = expr.lhs, expr.rhs, REL_TYPE[type(expr)]
+    assert isinstance(expr, core.Rel), (
+        f'{expr} is not an instance of core.Rel, instead it is of type {type(expr)}.'
+    )
+    lhs, rhs = expr.args
+    rel = REL_TYPE[type(expr)]
     rel = REL_REVERSED[rel]
-    raise RuntimeError("TODO: Implement this!")
-    return core.Rel(lhs, rhs, rel)
+    return REL_TYPE_SYM[rel](lhs, rhs)
+    
 
 
 def export_argmin_solution(fname, context, g_model, ):
     res_dict = {}
 
-    # Retrieve the name space of sympy variables and save
+    # Retrieve the name space of SymEngine variables and save
     ns = context._name_space
     res_dict['namespace'] = ns
 
@@ -63,16 +70,17 @@ def export_argmin_solution(fname, context, g_model, ):
         pickle.dump(res_dict, f_pickle)
 
 
-def compute_rref_filter_eq_constr(eq_constr_str, variables, locals):
+def compute_rref_filter_eq_constr(eq_constr_str, variables):
     """
     eq_constr_str is a list of strings corresponding to initially given equality constraints in .json file.
     This function returns two things:
         1) dictionary
         2) list
-    :param eq_constr_str:   (list) List of equality constraints in str type.
-    :param variables:       (list) List of sympy variables
-    :param locals:          (dict) Namespace of Sympy variables
-    :return:
+    Args:
+        eq_constr_str:   (list) List of equality constraints in str type.
+        variables:       (list) List of symengine variables
+    Returns:
+        (tuple) (eq_constr_dict, variables)
     """
     if len(eq_constr_str) == 0:
         return {}, variables
@@ -80,23 +88,23 @@ def compute_rref_filter_eq_constr(eq_constr_str, variables, locals):
     eq_constr_dict = {}
     eq_constr_lst = []
     eq_constr = []
-    variables = Matrix(variables)
+    variables = sp.Matrix(variables)
 
     # Each equality constraint transformed to lhs - rhs = 0
     for const in eq_constr_str:
         lhs, rhs = const.split('=')
-        lhs, rhs = sympify(lhs, locals=locals), sympify(rhs, locals=locals)
+        lhs, rhs = sp.sympify(lhs), sp.sympify(rhs)
         expr = lhs - rhs
         if expr.free_symbols.intersection(variables.free_symbols):
             eq_constr.append(expr)
 
     if len(eq_constr) == 0:
-        return {}, list(variables)
+        return {}, [core.Symbol(str(v)) for v in variables]
 
     # Build the coefficient matrix (constants are also appended at the rightmost column)
-    A = Matrix([[row.coeff(v) for v in variables] for row in eq_constr])
-    C = Matrix([row.as_coefficients_dict()[1] for row in eq_constr])
-    A_ = Matrix.hstack(A, C)
+    A = sp.Matrix([[row.coeff(v) for v in variables] for row in eq_constr])
+    C = sp.Matrix([row.as_coefficients_dict()[1] for row in eq_constr])
+    A_ = sp.Matrix.hstack(A, C)
 
     # Compute the reduced row echelon form of the A_ matrix
     R, pivots = A_.rref()               # R is the reduced matrix; pivots is a tuple of pivot column indices
@@ -104,13 +112,13 @@ def compute_rref_filter_eq_constr(eq_constr_str, variables, locals):
     R = R[:num_lin_indep_constr, :]     # Remove rows of zeros
 
     # Append 1 at the end of variables column and perform matrix multiplication of R and the variable vector.
-    E = R * Matrix.vstack(variables, Matrix([1]))
+    E = R * sp.Matrix.vstack(variables, sp.Matrix([1]))
     for p, eq in zip(pivots, E):
         pvar = variables[p]
         rhs = solveset(eq, pvar).args[0]
-        eq_constr_dict[pvar] = rhs
+        eq_constr_dict[core.Symbol(str(pvar))] = core.S(rhs)
 
-    return eq_constr_dict, list(variables)
+    return eq_constr_dict, [core.Symbol(str(v)) for v in variables]
 
 
 def center_features(feature):
@@ -137,14 +145,14 @@ def get_multiplied_expr(expr: core.Basic, var: core.Symbol) -> core.Basic:
     Given a symengine expression and a symbol,
         return the expression that is multiplied to the variable.
     """
-    return expr.coeff(var)
+    return expr.as_coefficients_dict()[var]
 
 
 def is_bilinear(expr):
     """
     Given a symengine expression, check whether it is bilinear.
     """
-    return any(map(lambda t: len(t.free_symbols) >= 2, terms))
+    return any(map(lambda t: len(t.free_symbols) >= 2, expr.args))
 
 
 def get_depth(context, node_id, depth, lst):
@@ -197,31 +205,38 @@ def get_num_nodes(context, node_id):
     return num_nodes[0], num_nodes[1]   # Number of internal, terminal nodes
 
 
-def get_bound(var, expr):
+def get_bound(var: core.Symbol, expr: core.Rel) -> Tuple[core.Basic, bool]:
     """
-    Return either lower bound or upper bound of 'var' from expr.
-    :param var:     (core.Symbol) target variable
-    :param expr:    (core.Rel) An inequality over 'var'
-    :return:        (core.Basic, bool) a sympy expression along with the boolean value indicating whether an upper
-                    or lower bound. True for upper bound, False for lower bound.
+    Return either lower bound or upper bound of 'var' from `expr`.
+
+    Args:
+        var:     (core.Symbol) target variable
+        expr:    (core.Rel) An inequality over 'var'
+
+    Returns:
+        (core.Basic, bool) a symengine expression along with 
+            the boolean value indicating whether an upper or lower bound.
+            True for upper bound, False for lower bound.
     """
-    comp = core.solve(expr, var)
+    assert isinstance(expr, core.Rel), (
+        f'{expr} is not an instance of core.Rel, instead it is of type {type(expr)}.'
+    )
+    lt = isinstance(expr, core.LessThan) or isinstance(expr, core.StrictLessThan)
+    lhs, rhs = expr.args
+    lhs = (lhs - rhs).expand()
 
-    if isinstance(comp, core.And):
-        assert len(comp.args) == 2, "No more than 3 terms should be generated as a result of solve(ineq)!"
-        args1rhs = comp.args[1].canonical.rhs             # when 'var' is the only variable in the
-        i = 0 if (args1rhs == core.oo) or (args1rhs == -core.oo) else 1
-        comp = comp.args[i]
-    else:
-        raise RuntimeError("TODO: Handle this case!")
-        comp = sympy.simplify(comp)
+    # Solve to get the bound over the variable.
+    sol_set = core.solve(lhs, var)
+    sols = sol_set.args
+    assert len(sols) == 1, f"More than one solution found: {sol_set}"
+    sol_expr = sols[0].expand()
 
-    comp = comp.canonical
     # check whether upper bound or lower bound over 'var'
     # if ub: 'var' <= upper bound, else: 'var' >= lower bound
-    ub = isinstance(comp, core.LessThan) or isinstance(comp, core.StrictLessThan)
-    expr = comp.rhs
-    return expr, ub
+    # If the coefficient of `var` was negative, should swap the direction of the inequality.
+    c = lhs.as_coefficients_dict()[var]
+    ub = (lt and c > 0) or (not lt and c < 0)
+    return sol_expr, ub
 
 
 def get_date_time():
@@ -229,7 +244,7 @@ def get_date_time():
 
 
 def check_sym_boolean(expr: core.Basic):
-    return isinstance(expr, core.BooleanAtom) or isinstance(expr, BooleanVar)
+    return isinstance(expr, core.BooleanAtom) or expr.is_Boolean
 
 
 def sample_rvs(

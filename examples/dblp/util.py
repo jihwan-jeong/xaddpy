@@ -7,28 +7,29 @@ from typing import Callable, List, Optional, Tuple
 import gurobipy as gp
 import numpy as np
 import pulp as pl
-import sympy as sp
 from gurobipy import GRB, quicksum
 from scipy import stats
 from scipy.linalg import block_diag
 from scipy.sparse import random
+import symengine as sym
+import symengine.lib.symengine_wrapper as core
 
 from examples.xadd_for_milp.xadd_milp import XADD
 from xaddpy.utils.logger import logger
 from xaddpy.utils.lp_util import GurobiModel
-from xaddpy.utils.util import (compute_rref_filter_eq_constr,  
+from xaddpy.utils.util import (compute_rref_filter_eq_constr, typeConverter,
                                get_date_time, get_num_nodes)    # DO NOT REMOVE
 from xaddpy.xadd.xadd_parse_utils import parse_xadd_grammar
 
-Ak = sp.Matrix([[0, 1], [-2, -1], [2, -1]])
-ak = sp.Matrix([[2], [-2], [2]])
-ck = sp.Matrix([[-1], [-1]])
-dk1 = ck.copy()
+Ak = core.Matrix([[0, 1], [-2, -1], [2, -1]])
+ak = core.Matrix([[2], [-2], [2]])
+ck = core.Matrix([[-1], [-1]])
+dk1 = core.Matrix([[-1], [-1]])
 dk2 = - 2
-Qk1 = sp.eye(2)
-Qk2 = sp.Matrix([[1], [1]])
-Bk2 = sp.Matrix([[-1], [1]])
-bk2 = sp.Matrix([[0], [2]])
+Qk1 = core.eye(2)
+Qk2 = core.Matrix([[1], [1]])
+Bk2 = np.array([[-1], [1]], dtype=int)
+bk2 = core.Matrix([[0], [2]])
 
 
 def trunc(values, decs=0):
@@ -39,40 +40,40 @@ def get_delta_and_rho(
         class_id,
         n,
 ):
-    rho = sp.zeros(n, 1)
+    rho = core.zeros(n, 1)
     if class_id == 0:
         # delta = np.random.uniform(1, 3, size=(n, 1))
-        delta = sp.Matrix(np.random.randint(1, 3, size=(n, 1)))
+        delta = core.Matrix(np.random.randint(1, 3, size=(n, 1)).tolist())
     elif class_id == 1:
-        delta = sp.Matrix([sp.S(3) for _ in range(n)]) + sp.zeros(n, 1)
+        delta = core.Matrix([core.S(3) for _ in range(n)]) + core.zeros(n, 1)
     elif class_id == 2:
         # delta = np.abs(np.random.normal(0, 100, size=(n, 1))) + 3
-        delta = sp.Matrix(np.random.randint(4, 6, size=(n, 1)))
+        delta = core.Matrix(np.random.randint(4, 6, size=(n, 1)).tolist())
     else:
-        delta = sp.Matrix([sp.S(5) / 2 for _ in range(n)]) + sp.zeros(n, 1)
-        rho = sp.Matrix([sp.S(3) / 2 for _ in range(n)]) + sp.zeros(n, 1)
+        delta = core.Matrix([core.S(5) / 2 for _ in range(n)]) + core.zeros(n, 1)
+        rho = core.Matrix([core.S(3) / 2 for _ in range(n)]) + core.zeros(n, 1)
     return delta, rho
 
 
 def generate_B_matrix(delta, rho):
-    if isinstance(delta, sp.Matrix):
+    if isinstance(delta, core.Matrix):
         delta = delta[0]
-    if isinstance(rho, sp.Matrix):
+    if isinstance(rho, core.Matrix):
         rho = rho[0]
-    return sp.Matrix([[-delta, 1], [delta - rho, 1], [rho, -2]])
+    return core.Matrix([[-delta, 1], [delta - rho, 1], [rho, -2]])
 
 
 def generate_b_vector(delta, rho):
-    if isinstance(delta, sp.Matrix):
+    if isinstance(delta, core.Matrix):
         delta = delta[0]
-    if isinstance(rho, sp.Matrix):
+    if isinstance(rho, core.Matrix):
         rho = rho[0]
-    return sp.Matrix([[0], [2 * delta - rho], [0]])
+    return core.Matrix([[0], [2 * delta - rho], [0]])
 
 
-def return_household_matrix(v: sp.Matrix):
+def return_household_matrix(v: core.Matrix):
     dim = len(v)
-    H = sp.eye(dim) - 2 / (v.T * v)[0] * (v * v.T)
+    H = core.eye(dim) - 2 / (v.T * v)[0] * (v * v.T)
     return H
 
 
@@ -123,10 +124,10 @@ def generate_dblp_instance(
 
 
     # Coefficient matrix A
-    A = sp.Matrix(block_diag(*[Ak] * k2))
+    A = core.Matrix(block_diag(*[Ak] * k2).tolist())
 
     # Constant vector a
-    a = sp.Matrix.vstack(*[ak] * k2)
+    a = core.Matrix([ak] * k2)
 
     # Coefficient matrix B and vector b
     Bk1_lst = []
@@ -135,50 +136,55 @@ def generate_dblp_instance(
         if n == 0:
             continue
         delta, rho = get_delta_and_rho(i, n)
-        Bk1 = sp.Matrix(block_diag(*map(lambda x: generate_B_matrix(x[0], x[1]), zip(delta, rho))))
-        b1 = sp.Matrix.vstack(*list(map(lambda x: generate_b_vector(x[0], x[1]), zip(delta, rho))))
+        Bk1 = core.Matrix(
+            block_diag(*map(lambda x: generate_B_matrix(x[0], x[1]), zip(delta, rho))).tolist()
+        )
+        b1 = core.Matrix(*list(map(lambda x: generate_b_vector(x[0], x[1]), zip(delta, rho))))
         Bk1_lst.append(Bk1)
         b1_lst.append(b1)
-    B1 = sp.Matrix(block_diag(*Bk1_lst))
-    b1 = sp.Matrix.vstack(*b1_lst)
-    B2 = sp.Matrix.diag([Bk2] * (k2 - k1))
-    b2 = sp.Matrix([[bk2] for _ in range(k2 - k1)])
+    B1 = core.Matrix(block_diag(*Bk1_lst).tolist())
+    b1 = core.Matrix(*b1_lst)
+    
+    B2 = np.zeros((Bk2.shape[0] * (k2 - k1), k2 - k1), dtype=int)
+    for j in range(k2 - k1):
+        B2[j * Bk2.shape[0]: (j + 1) * Bk2.shape[0], j] = Bk2[:, 0]
+    B2 = core.Matrix(B2.tolist())
+    b2 = core.Matrix([bk2 for _ in range(k2 - k1)])
     if k1 == 0:
         B = B2
         b = b2
     elif k2 - k1 > 0:
-        B = sp.Matrix(block_diag(B1, B2))
-        b = sp.Matrix.vstack(b1, b2)
+        B = core.Matrix(block_diag(B1, B2).tolist())
+        b = core.Matrix([b1, b2])
     else:
         B, b = B1, b1
 
     # Coefficient matrix Q
-    Q = sp.Matrix(block_diag(*([Qk1]*k1 + [Qk2] * (k2 - k1))))
+    Q = core.Matrix(block_diag(*([Qk1]*k1 + [Qk2] * (k2 - k1))).tolist())
 
     # Coefficient vector c
-    c = sp.Matrix.vstack(*[ck] * k2)
+    c = core.Matrix([ck] * k2)
 
     # Coefficient vector d
-    d = sp.Matrix.vstack(*[sp.Matrix.vstack(*[dk1] * k1)])
+    d = core.Matrix([core.Matrix([dk1] * k1)])
     if k2 - k1 > 0:
-        d = sp.Matrix.vstack(*[d, sp.Matrix([dk2 for _ in range(k2 - k1)])])
-
+        d = core.Matrix([d, core.Matrix([dk2 for _ in range(k2 - k1)])])
 
     if transform:
         while True:
             # Random Householder matrices (for sparsity, only a few entries are nonzero)
-            vx = sp.Matrix(np.random.randint(1, 4, size=(nx, 1)))
+            vx = core.Matrix(np.random.randint(1, 4, size=(nx, 1)).tolist())
             idxs = np.random.choice(range(nx), size=max(nx-1, 0), replace=False)
-            vx = sp.Matrix([vx[i] if i not in idxs else 0 for i in range(len(vx))])
-            vy = sp.Matrix(np.random.randint(1, 4, size=(ny, 1)))
+            vx = core.Matrix([vx[i] if i not in idxs else 0 for i in range(len(vx))])
+            vy = core.Matrix(np.random.randint(1, 4, size=(ny, 1)).tolist())
             idxs = np.random.choice(range(ny), size=max(ny-1, 0), replace=False)
-            vy = sp.Matrix([vy[i] if i not in idxs else 0 for i in range(len(vy))])
+            vy = core.Matrix([vy[i] if i not in idxs else 0 for i in range(len(vy))])
             Hx = return_household_matrix(vx)  # np.eye(nx) - 2 / (vx.T @ vx) * vx @ vx.T
             Hy = return_household_matrix(vy)  # np.eye(ny) - 2 / (vy.T @ vy) * vy @ vy.T
 
             # Positive definite diagonal matrices Dx and Dy
-            Dx = sp.Matrix(np.diag(np.random.randint(1, 4, size=(nx))))
-            Dy = sp.Matrix(np.diag(np.random.randint(1, 4, size=(ny))))
+            Dx = core.Matrix(np.diag(np.random.randint(1, 4, size=(nx))).tolist())
+            Dy = core.Matrix(np.diag(np.random.randint(1, 4, size=(ny))).tolist())
 
             # The transformation matrices
             Mx = Dx * Hx
@@ -250,10 +256,10 @@ def create_prob_json(
         (c, d, Q, A, a, B, b), prob_info = generate_rand_dblp_instances(density, seed, nx=nx, ny=ny)
         nx, ny = len(c), len(d)
 
-    x = sp.symbols(f'x0:{nx}')
-    y = sp.symbols(f'y0:{ny}')
+    x = sym.symbols(' '.join([f'x{i}' for i in range(nx)]))
+    y = sym.symbols(' '.join([f'y{i}' for i in range(ny)]))
 
-    x_vec, y_vec = sp.Matrix(x), sp.Matrix(y)
+    x_vec, y_vec = core.Matrix(x), core.Matrix(y)
     obj = c.T @ x_vec + x_vec.T @ Q @ y_vec + d.T @ y_vec
 
     x_constr_lhs = A @ x_vec
@@ -361,7 +367,7 @@ def generate_rand_dblp_instances(
     status = False
     xs = model.addVars(range(nx), lb=0, ub=ub, vtype=GRB.CONTINUOUS, name='x')
     ys = model.addVars(range(ny), lb=0, ub=ub, vtype=GRB.CONTINUOUS, name='y')
-    
+
     while True:
         # Generate A
         a = rv(nA)
@@ -412,9 +418,9 @@ def generate_rand_dblp_instances(
                 logger.info(f"Feasible instance generated: optimal objective: {obj_val}")
                 break
 
-    # Make all elements Sympy objects
+    # Make all elements SymEngine objects
     Q, A, B, c, d, a, b = tuple(map(
-        lambda arr: sp.Matrix(arr), [Q, A, B, c, d, a, b]
+        lambda arr: core.Matrix(arr), [Q, A, B, c, d, a, b]
     ))
 
     prob_info = {'ub': ub, 'obj_val': obj_val}
@@ -438,33 +444,30 @@ def build_xadd_from_json(
     # Which set of variables to minimize? 0 or 1
     min_var_set_id = prob_instance['min-var-set-id']
 
-    # Namespace to be used to define sympy symbols
-    ns = {}
-
     # is_minimize?
     is_min = True if prob_instance['is-minimize'] else False
 
     # Create Sympy symbols for cvariables and bvariables
     if len(prob_instance['cvariables0']) == 1 and isinstance(prob_instance['cvariables0'][0], int):
-        cvariables0 = sp.symbols('x1:%s' % (prob_instance['cvariables0'][0]+1))
+        cvariables0 = sym.symbols(' '.join([f'x{i}' for i in range(1, prob_instance['cvariables0'][0]+1)]))
     else:
         cvariables0 = []
         for v in prob_instance['cvariables0']:
-            cvariables0.append(sp.symbols(v))
+            cvariables0.append(core.Symbol(v))
     if len(prob_instance['cvariables1']) == 1 and isinstance(prob_instance['cvariables1'][0], int):
-        cvariables1 = sp.symbols('y1:%s' % (prob_instance['cvariables1'][0]+1))
+        cvariables1 = sym.symbols(' '.join([f'y{i}' for i in range(1, prob_instance['cvariables1'][0]+1)]))
     else:
         cvariables1 = []
         for v in prob_instance['cvariables1']:
-            cvariables1.append(sp.symbols(v))
+            cvariables1.append(core.Symbol(v))
     cvariables = cvariables0 + cvariables1
 
     if len(prob_instance['bvariables']) == 1 and isinstance(prob_instance['bvariables'][0], int):
-        bvariables = sp.symbols(f"b1:{prob_instance['bvariables'][0] + 1}", integer=True)
+        bvariables = sym.symbols(' '.join([f'b{i}' for i in range(1, prob_instance['bvariables'][0]+1)]))
     else:
         bvariables = []
         for v in prob_instance['bvariables']:
-            bvariables.append(sp.symbols(v, integer=True))
+            bvariables.append(core.Symbol(v))
 
     # Retrieve dimensions of problem instance
     cvar_dim = len(cvariables)                      # Continuous variable dimension
@@ -474,7 +477,6 @@ def build_xadd_from_json(
     # assert (bvar_dim == 0 and cvar_dim != 0) or (bvar_dim != 0 and cvar_dim == 0) # Previously, we accepted either continuous or binary variables, not both
 
     variables = list(cvariables) + list(bvariables)
-    ns.update({str(v): v for v in variables})
 
     # retrieve lower and upper bounds over decision variables
     min_vals = prob_instance['min-values']
@@ -492,29 +494,24 @@ def build_xadd_from_json(
 
     bound_dict = {}
     for i, (lb, ub) in enumerate(zip(min_vals, max_vals)):
-        lb, ub = sp.S(lb), sp.S(ub)
-        bound_dict[ns[str(cvariables[i])]] = (lb, ub)
+        lb, ub = core.S(lb), core.S(ub)
+        lb, ub = typeConverter[type(lb)](lb), typeConverter[type(ub)](ub)
+        bound_dict[cvariables[i]] = (lb, ub)
     
     # Update XADD attributes
-    variables = [ns[str(v)] for v in variables]
     if var_name_rule is not None:
         XADD.set_variable_ordering_func(var_name_rule)
-
-    bvariables = [ns[str(bvar)] for bvar in bvariables]
-    cvariables0 = [ns[str(cvar)] for cvar in cvariables0]
-    cvariables1 = [ns[str(cvar)] for cvar in cvariables1]
     context.update_bounds(bound_dict)
-    context.update_name_space(ns)
 
     # Read constraints and link with the created Sympy symbols
     # If an initial xadd is directly provided in str type, need also return it
     ineq_constrs = []
     eq_constr_dict = {}
     for const in prob_instance['ineq-constr']:
-        ineq_constrs.append(sp.sympify(const, locals=ns))
-    
+        ineq_constrs.append(core.sympify(const))
+
     if prob_instance['xadd']:
-        init_xadd = parse_xadd_grammar(prob_instance['xadd'], ns)[1][0]
+        init_xadd = parse_xadd_grammar(prob_instance['xadd'])[1][0]
     else:
         init_xadd = None
         # Handle equality constraints separately.
@@ -522,8 +519,7 @@ def build_xadd_from_json(
         # of the coefficient matrix tells us linearly independent equality constraints. Only put these constraints
         # when building the initial LP XADD.
         eq_constr_dict, variables = compute_rref_filter_eq_constr(prob_instance['eq-constr'],
-                                                                  variables,
-                                                                  locals=ns)
+                                                                  variables)
         
     assert (len(ineq_constrs) + len(eq_constr_dict) == 0 and init_xadd is not None) or \
            (len(ineq_constrs) + len(eq_constr_dict) != 0 and init_xadd is None), \
@@ -532,8 +528,8 @@ def build_xadd_from_json(
     # Read in objective function if provided
     obj = prob_instance['objective']
     if obj:
-        obj = sp.expand(sp.sympify(prob_instance['objective'], locals=ns))
-    
+        obj = core.sympify(prob_instance['objective']).expand()
+
     # Build XADD from constraints and the objective
     if (obj and init_xadd is None):
         constrs_and_objective = ineq_constrs + [obj]
@@ -544,7 +540,7 @@ def build_xadd_from_json(
         dblp_xadd = context.build_initial_xadd(init_xadd)
     else:
         raise ValueError("No objective function or initial XADD provided")
-    
+
     context._prune_equality = False
     # Substitute in equality constraints to `dblp_xadd`
     # It is guaranteed that we don't need to substitute one equality constraint into another;
@@ -567,27 +563,27 @@ def build_xadd_from_json(
         lb, ub = bound_dict[v_i]
         bound_constraints = []
 
-        if lb != -sp.oo:
+        if lb != -core.oo:
             comp = (rhs >= lb)
             bound_constraints.append((comp, True))
-        if ub != sp.oo:
+        if ub != core.oo:
             comp = (rhs <= ub)
             bound_constraints.append((comp, True))
         for d, b in bound_constraints:
-            high_val = sp.oo if (b and not is_min) or (not b and is_min) else -sp.oo
-            low_val = -sp.oo if (b and not is_min) or (not b and is_min) else sp.oo
+            high_val = core.oo if (b and not is_min) or (not b and is_min) else -core.oo
+            low_val = -core.oo if (b and not is_min) or (not b and is_min) else core.oo
             bound_constraint = context.get_dec_node(d, low_val, high_val)
             dblp_xadd = context.apply(bound_constraint, dblp_xadd, 'min' if not is_min else 'max')
             dblp_xadd = context.reduce_lp(dblp_xadd)
     context._prune_equality = True
     dblp_xadd = context.reduce_lp(dblp_xadd)
-    
+
     # Final variables set
     min_vars = cvariables0 if min_var_set_id == 0 else cvariables1
     free_vars = cvariables0 if min_var_set_id == 1 else cvariables1
     variables = dict(
-        min_var_list=[ns[str(cvar)] for cvar in min_vars if ns[str(cvar)] in variables],
-        free_var_list=[ns[str(cvar)] for cvar in free_vars if ns[str(cvar)] in variables],
+        min_var_list=[cvar for cvar in min_vars if cvar in variables],
+        free_var_list=[cvar for cvar in free_vars if cvar in variables],
     )
     context._free_var_set.update(free_vars)
     context._min_var_set.update(min_vars)
