@@ -80,12 +80,12 @@ class LocalReduceLP:
         """Performs reduce_lp method on the given node and returns the (potentially) reduced node ID
 
         Args:
-            node_id (int): The ID of the node to which 'reduce_lp' is applied
+            node_id (int): The ID of the node to which 'reduce_lp' is applied.
             test_dec (set): The set con
             redundancy (bool): _description_
 
         Returns:
-            _type_: _description_
+            int: Reduced XADD node ID.
         """
         avail_mem = psutil.virtual_memory().available * 100 / psutil.virtual_memory().total
         if avail_mem < 10:

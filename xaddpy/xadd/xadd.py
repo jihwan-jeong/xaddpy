@@ -169,7 +169,7 @@ class XADD:
 
     def add_boolean_var(self, var: Union[core.Symbol, BooleanVar]):
         if not isinstance(var, BooleanVar):
-            print(f"The type of boolean variable {var} is not correctly set.")
+            logger.info(f"The type of boolean variable {var} is not correctly set.")
             var = BooleanVar(var)
         if var not in self._bool_var_set:
             num_existing_bvar = len(self._bool_var_set)
@@ -183,9 +183,7 @@ class XADD:
         return self._name_space.get(name)
 
     def create_standard_nodes(self):
-        """
-        Create and store standard nodes and generate indices, which can be frequently used.
-        """
+        """Creates and stores standard nodes."""
         self.ZERO = self.get_leaf_node(core.S(0))
         self.ONE = self.get_leaf_node(core.S(1))
         self.TRUE = self.get_leaf_node(core.true)
@@ -305,16 +303,25 @@ class XADD:
             if not low_n.is_leaf():
                 if dec_id >= low_n.dec:
                     # compare local order
-                    print("Reordering problem: {} >= {}\n{}: {}\n{}: {}".
-                          format(dec_id, low_n.dec, dec_id, self._id_to_expr[dec_id], low_n.dec, self._id_to_expr[low_n.dec]))
+                    logger.info(
+                        (
+                            f"Reordering problem: {dec_id} >= {low_n.dec}\n"
+                            f"{dec_id}: {self._id_to_expr[dec_id]}\n"
+                            f"{low_n.dec}: {self._id_to_expr[low_n.dec]}"
+                        )
+                    )
                     raise ValueError
             high_n = self.get_exist_node(node.high)
             if not high_n.is_leaf():
                 if dec_id >= high_n.dec:
                     # compare local order
-                    print("Reordering problem: {} >= {}\n{}: {}\n{}: {}".
-                          format(dec_id, high_n.dec, dec_id, self._id_to_expr[dec_id], high_n.dec,
-                                 self._id_to_expr[high_n.dec]))
+                    logger.info(
+                        (
+                            f"Reordering problem: {dec_id} >= {high_n.dec}\n"
+                            f"{dec_id}: {self._id_to_expr[dec_id]}\n"
+                            f"{high_n.dec}: {self._id_to_expr[high_n.dec]}"
+                        )
+                    )
                     raise ValueError
 
     def contains_node_id(self, root: int, target: int) -> bool:
@@ -343,12 +350,17 @@ class XADD:
 
     def get_inode_canon(self, dec: int, low: int, high: int) -> int:
         if dec <= 0:
-            print(f"Warning: Canonizing Negative Decision: {dec} -> {self._id_to_expr[abs(dec)]}")
+            logger.info(
+                (
+                    "Warning: Canonizing Negative Decision: "
+                    f"{dec} -> {self._id_to_expr[abs(dec)]}"
+                )
+            )
         result1 = self.get_inode_canon_apply_trick(dec, low, high)
         result2 = self.get_inode_canon_insert(dec, low, high)
 
         if result1 != result2 and not self.contains_node_id(result1, self.NAN):
-            print("Canonical error (difference not on NAN)")
+            logger.info("Warning: Canonical error (difference not on NAN)")
         return result2
 
     def get_inode_canon_insert(self, dec: int, low: int, high: int) -> int:
@@ -1382,7 +1394,7 @@ class XADD:
         # Handle boolean expressions
         if not isinstance(expr, core.Rel):
             if not expr.is_Boolean and expr.is_symbol:
-                print(f"Variable {expr} will be treated as Boolean")
+                logger.info(f"Variable {expr} will be treated as Boolean")
                 expr = BooleanVar(expr)
                 if expr in self._cont_var_set:
                     self._cont_var_set.remove(expr.var)
@@ -1499,7 +1511,7 @@ class XADD:
     def get_exist_node(self, node_id: int) -> Node:
         node = self._id_to_node.get(node_id, None)
         if node is None:
-            print("Unexpected Missing node: " + node_id)
+            logger.info("Unexpected Missing node: " + node_id)
         return node
 
     def get_internal_node(self, dec_id: int, low: int, high: int) -> int:
@@ -1664,7 +1676,7 @@ class XADD:
             if n is None:
                 raise ValueError("add_sepcial_node: None")
         except ValueError as error:
-            print(error)
+            logger.error(error)
             exit(1)
         self._special_nodes.add(n)
 
@@ -1682,26 +1694,19 @@ class XADD:
         for applyCache in self._apply_caches.values():
             applyCache.clear()
         self._inode_to_vars.clear()
-        # self._factor_cache.clear()
         self._temp_ub_lb_cache.clear()
-        # self._reduce_annotate_cache.clear()
         self.RLPContext.flush_implications()
 
         # Set up temporary alternates to these HashMaps
-        self._node_to_id_new.clear()
-        self._id_to_node_new.clear()
-        # self._id_to_expr_new.clear()
-        # self._expr_to_id_new.clear()
+        self._node_to_id_new = {}
+        self._id_to_node_new = {}
 
         # Copy over 'special' nodes then set new dict
         for node_id in self._special_nodes:
             self.copy_in_new_cache_node(node_id)
 
-        self._node_to_id = self._node_to_id_new.copy()
-        self._id_to_node = self._id_to_node_new.copy()
-        # self._expr_to_id = self._expr_to_id_new.copy()
-        # self._id_to_expr = self._id_to_expr_new.copy()
-
+        self._node_to_id = self._node_to_id_new
+        self._id_to_node = self._id_to_node_new
         self.create_standard_nodes()
 
         logger.info(f"{len(self._node_to_id)+len(self._id_to_node)} nodes")
@@ -1714,12 +1719,9 @@ class XADD:
             # Copy node and node id
             self._id_to_node_new[node_id] = node
             self._node_to_id_new[node] = node_id
-
-            # Copy decision expr and its id
-
             # Recurse
-            self.copy_in_new_cache_node(node._high)
-            self.copy_in_new_cache_node(node._low)
+            self.copy_in_new_cache_node(node.high)
+            self.copy_in_new_cache_node(node.low)
         else:
             self._id_to_node_new[node_id] = node
             self._node_to_id_new[node] = node_id
@@ -2152,7 +2154,12 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                 ub = oo
             self._lower_bound, self._upper_bound = lb, ub
         else:
-            print("No domain bounds over {} are provided... using -oo and oo as lower and upper bounds.".format(var))
+            logger.info(
+                (
+                    f"No domain bounds over {str(var)} are provided..."
+                     " Using -oo and oo as lower and upper bounds."
+                )
+            )
             self._lower_bound: Union[int, float, core.Number] = -oo
             self._upper_bound: Union[int, float, core.Number] = oo
 
