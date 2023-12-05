@@ -214,12 +214,6 @@ class LocalReduceLP:
 
         if status == pl.LpStatusUndefined:
             logger.warning("Undefined status during Test 1?")
-            logger.info("Setting DualReductions to 0 and trying again.")
-            self.model.toggle_direct_solver_on()
-            self.model.setParam('DualReductions', 0)
-            status = self.solve()
-            self.model.setParam('DualReductions', 1)
-            self.model.toggle_direct_solver_off()
 
         if status == pl.LpStatusInfeasible:
             infeasible = True
@@ -300,7 +294,6 @@ class LP:
         self.model.setAttr('_var_to_bound', context._var_to_bound)
 
         # Variable management
-        self._var_set = set()
         self.model.set_sym_to_pulp_dict(self.context._sym_to_pulp)
         self._sym_to_pulp = self.context._sym_to_pulp
         self._lhs_expr_to_pulp = {}
@@ -353,7 +346,7 @@ class LP:
         
         # Handle Boolean decisions
         elif isinstance(dec_expr, BooleanVar):
-            bool_pulp = self.convert_expr(dec_expr)
+            bool_pulp = self.convert_expr(dec_expr, binary=True)
             if is_true:
                 self.model.addConstr(bool_pulp == 1, name=f'dec({dec})')
             else:
@@ -376,12 +369,15 @@ class LP:
     def set_objective(self, obj):
         self.model.setObjective(obj)
 
-    def convert_expr(self, expr):
-        """
-        Given a SymEngine expression 'expr', return the optlang expression which contains optlang.symbolics variables
-        instead of core.Symbol variables.
-        :param expr:        (core.Basic)
-        :return:
+    def convert_expr(self, expr, binary: bool = False):
+        """Returns the PuLP expression.
+
+        Args:
+            expr (core.Basic): The SymEngine expression.
+            binary (bool, optional): Whether the expression is binary. Defaults to False.
+
+        Returns:
+            pl.LpAffineExpression: The PuLP expression.
         """
         if expr in self._lhs_expr_to_pulp:
             return self._lhs_expr_to_pulp[expr]
@@ -390,6 +386,7 @@ class LP:
                 expr,
                 model=self.model,
                 incl_bound=True,
+                binary=binary,
             )
             self._lhs_expr_to_pulp[expr] = pulp_expr
             return pulp_expr
@@ -432,10 +429,8 @@ class LP:
 
                 # Create Constraint
                 if rel == '<=' or rel == '<':
-                    # c = Constraint(lhs - rhs + S, ub=0)
                     self.model.addConstr(lhs_pulp + S <= 0, name=f'dec({dec})')
                 else:
-                    # c = Constraint(lhs - rhs - S, lb=0)
                     self.model.addConstr(lhs_pulp - S >= 0, name=f'dec({dec})')
         
         if len(self.model.get_constraints()) == 0:
