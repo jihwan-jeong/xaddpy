@@ -84,60 +84,65 @@ class LocalReduceLP:
 
         node: Node = self.get_exist_node(node_id)
 
-        # A leaf node should be reduced (and cannot be restricted) by default if hashing and equality testing
-        # are working in get_leaf_node
+        # A leaf node should be reduced (and cannot be restricted).
         if node.is_leaf():
             return node_id
-        
+
         node = cast(XADDINode, node)
         dec_id = node.dec
-        
+
         # Skip non-linear expressions (any higher order terms including bilinear)
-        if not self._expr_id_to_linear_check[dec_id]:
+        # or Boolean decisions.
+        if not self._expr_id_to_linear_check[dec_id] or (
+            isinstance(self._context._id_to_expr[dec_id], BooleanVar)
+        ):
             low = self.reduce_lp_v2(node.low, test_dec, redundancy)
             high = self.reduce_lp_v2(node.high, test_dec, redundancy)
             return self.get_internal_node(dec_id, low, high)
-        
-        # Full branch implication test
-        # If `node.dec` is implied by `test_dec`, then replace `node` with `node.high`
-        if self.is_test_implied(test_dec, node.dec):
+
+        # Full branch implication test:
+        # If `node.dec` is implied by `test_dec`, then replace `node` with `node.high`.
+        if self.is_test_implied(test_dec, dec_id):
             return self.reduce_lp_v2(node.high, test_dec, redundancy)
-        # If the negation of `node.dec` is implied by `test_dec`, then replace `node` with `node.low`
-        elif self.is_test_implied(test_dec, -1 * node.dec):
+        # If the negated decision is implied by `test_dec`, 
+        # then replace `node` with `node.low`.
+        elif self.is_test_implied(test_dec, -dec_id):
             return self.reduce_lp_v2(node.low, test_dec, redundancy)
 
-        # Make subtree reduced before redundancy check
-        test_dec.add(-1 * node.dec)
+        # Make subtree reduced before redundancy check.
+        test_dec.add(-dec_id)
         low = self.reduce_lp_v2(node.low, test_dec, redundancy)
         try:
-            test_dec.remove(-1 * node.dec)
+            test_dec.remove(-dec_id)
         except KeyError as e:
             logger.error(str(e))
             logger.info("It is likely that the node is not canonical")
             exit(1)
 
-        test_dec.add(node.dec)
+        test_dec.add(dec_id)
         high = self.reduce_lp_v2(node.high, test_dec, redundancy)
         test_dec.remove(node.dec)
 
-        # After reducing subtrees, check if this node became redundant
+        # After reducing subtrees, check if this node became redundant.
         if redundancy:
-            # 1) check if true branch is implied in the low branch if current decision is true
-            test_dec.add(node.dec)
+            # 1) Check if true branch is implied in the low branch
+            # if current decision is true.
+            test_dec.add(dec_id)
             low_replace = self.is_result_implied(test_dec, low, high)
-            test_dec.remove(node.dec)
+            test_dec.remove(dec_id)
 
             if low_replace: return low
 
-            # 2) check if false branch is implied in the true branch if current decision is false
-            test_dec.add(-node.dec)
+            # 2) Check if false branch is implied in the true branch
+            # if current decision is false.
+            test_dec.add(-dec_id)
             high_replace = self.is_result_implied(test_dec, high, low)
-            test_dec.remove(-node.dec)
+            test_dec.remove(-dec_id)
 
             if high_replace: return high
 
-        # Standard reduce: getINode will handle the case of low == high
-        return self.get_internal_node(node.dec, low, high)
+        # Standard reduce: getINode will handle the case of low == high.
+        return self.get_internal_node(dec_id, low, high)
 
     def reduce_lp(self, node_id: int, redundancy: bool) -> int:
         test_dec = set()
@@ -224,16 +229,16 @@ class LocalReduceLP:
         infeasible = lp.test_slack(test_dec)
         return infeasible
     
-    def is_result_implied(self, test_dec: set, subtree: int, goal: int) -> bool:
-        """Checks whether 'goal' can be implied 
+    def is_result_implied(self, test_dec: Set[int], subtree: int, goal: int) -> bool:
+        """Checks whether 'goal' can be reached by `subtree`.
 
         Args:
-            test_dec (set): _description_
-            subtree (int): _description_
-            goal (int): _description_
+            test_dec (Set[int]): The set of decisions.
+            subtree (int): The ID of the subtree.
+            goal (int): The ID of the goal node.
 
         Returns:
-            bool: _description_
+            bool: Whether `subtree` always reaches `goal` given `test_dec`.
         """
         if subtree == goal:
             return True
@@ -241,34 +246,41 @@ class LocalReduceLP:
         goal_node = self.get_exist_node(goal)
 
         if not subtree_node.is_leaf():
+            # subtree is an internal node.
             if not goal_node.is_leaf():
+                # Both subtree and goal are internal nodes.
                 subtree_node = cast(XADDINode, subtree_node)
                 goal_node = cast(XADDINode, goal_node)
                 
-                # use variable ordering to stop pointless searches
+                # Use variable ordering to stop pointless searches.
                 if subtree_node.dec >= goal_node.dec:
                     return False
 
-            # If decisions down to the current node imply the negation of the `subtree_node.dec`:
+            # If decisions down to the current node imply
+            # the negation of the `subtree_node.dec`?
             if self.is_test_implied(test_dec, -subtree_node.dec):
-                return self.is_result_implied(test_dec, subtree_node.low, goal)   # Then, check for the low branch
-            if self.is_test_implied(test_dec, subtree_node.dec):   # Or they imply `subtree_node.dec`,
-                return self.is_result_implied(test_dec, subtree_node.high, goal)  # Then, check for the high branch
+                # Then, check for the low branch.
+                return self.is_result_implied(test_dec, subtree_node.low, goal)
+            # Otherwise, they imply `subtree_node.dec`.
+            if self.is_test_implied(test_dec, subtree_node.dec):
+                # Then, check for the high branch.
+                return self.is_result_implied(test_dec, subtree_node.high, goal)
 
-            # Now, recurse starting from the low branch
+            # Now, recurse starting from the low branch.
             test_dec.add(-subtree_node.dec)
             implied_in_low = self.is_result_implied(test_dec, subtree_node.low, goal)
             test_dec.remove(-subtree_node.dec)
 
-            # if one branch failed, no need to test the other one
+            # If one branch failed, no need to test the other one.
             if not implied_in_low: return False
 
+            # Check the other branch.
             test_dec.add(subtree_node.dec)
             implied_in_high = self.is_result_implied(test_dec, subtree_node.high, goal)
             test_dec.remove(subtree_node.dec)
 
             return implied_in_high
-        return False    # If XADDTNode, '==' check can make it True
+        return False    # If XADDTNode, '==' check can make it True.
 
     @property
     def context(self):
@@ -317,14 +329,17 @@ class LP:
 
     def add_constraint(self, dec: int, is_true: bool):
         """
-        Given an integer id for decision expression (and whether it's true or false), add the expression to LP problem.
-        1) Need to create Variable objects for each of SymEngine variables (if already created, retrieve from cache)
-        2) Need to convert SymEngine dec_expr to optlang Constraint format
-            e.g. c1 = Constraint(x1 + x2 + x3, ub=10)
-                 for x1 + x2 + x3 <= 10
+        Given an integer id for a decision expression (and whether it's true or false),
+            add the expression to LP problem.
+            1) Need to create Variable objects for each of SymEngine variables
+                (if already created, retrieve from cache).
+            2) Need to convert SymEngine dec_expr to optlang Constraint format
+                e.g. c1 = Constraint(x1 + x2 + x3, ub=10)
+                    for x1 + x2 + x3 <= 10
 
-        :param dec:         (int)
-        :param is_true:     (bool)
+        Args:
+            dec (int):      Decision ID.
+            is_true (bool): Whether the decision is true or false.
         """
         dec_expr = self.context._id_to_expr[dec]
         dec = dec if is_true else -dec
@@ -335,7 +350,7 @@ class LP:
             rel = REL_TYPE[type(dec_expr)]
             if not is_true:
                 rel = REL_NEGATED[rel]
-            
+
             assert rhs == 0, "RHS of a relational expression should always be 0 by construction!"
             lhs_pulp = self.convert_expr(lhs)                 # Convert lhs to pulp expression (rhs=0)
 
@@ -343,7 +358,7 @@ class LP:
                 self.model.addConstr(lhs_pulp >= 0, name=f'dec({dec})')
             elif rel == '<' or rel == '<=':
                 self.model.addConstr(lhs_pulp <= 0, name=f'dec({dec})')
-        
+
         # Handle Boolean decisions
         elif isinstance(dec_expr, BooleanVar):
             bool_pulp = self.convert_expr(dec_expr, binary=True)
@@ -353,7 +368,7 @@ class LP:
                 self.model.addConstr(bool_pulp == 0, name=f'dec({dec})')
         else:
             raise NotImplementedError("Decision expression not supported")
-    
+
     def solve(self) -> Optional[int]:
         """
         Solve the LP defined by all added constraints, variables and objective. We only care about if it's

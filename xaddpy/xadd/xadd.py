@@ -1117,7 +1117,7 @@ class XADD:
                 ret = low
             elif op == "restrict_high":
                 ret = high
-            elif op == "sum" or op == "prod":
+            elif op == "add" or op == "prod":
                 ret = self.apply(low, high, op)
             else:
                 raise NotImplementedError
