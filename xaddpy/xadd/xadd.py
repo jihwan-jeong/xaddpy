@@ -107,7 +107,7 @@ class XADD:
 
         self._apply_cache = {}
         self._apply_caches = {}
-        self._inode_to_vars = {}
+        self._inode_to_vars: Dict[Tuple[int, int, int], Set[VAR_TYPE]] = {}
         self._factor_cache = {}
 
         # Reduce LP
@@ -2281,7 +2281,6 @@ class XADDLeafMinOrMax(XADDLeafOperation):
             # Note: always 1st argument should be upper bound, while 2nd argument is lower bound
             min_max_eval = self._context.apply(eval_upper, eval_lower, 'max' if self._is_max else 'min',
                                                annotation=annotation)
-        # self._context._temp_ub_lb_cache.clear()
 
         # Reduce LP
         min_max_eval = self._context.reduce_lp(min_max_eval)

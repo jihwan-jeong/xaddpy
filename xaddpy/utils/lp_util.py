@@ -248,6 +248,11 @@ class Model(BasePULPModel):
         self._model = pl.LpProblem(self._model.name, sense=self._model.getSense())
         self.toggle_direct_solver_off()
 
+    def reset_constraints(self):
+        self._model.constraints.clear()
+        self._model.modifiedConstraints.clear()
+        self.toggle_direct_solver_off()
+
     def get_constraint_by_name(self, name):
         return self._model.constraints.get(name)
 

@@ -1,4 +1,4 @@
-from typing import Optional, cast
+from typing import Dict, FrozenSet, Optional, Set, cast
 
 import psutil
 import pulp as pl
@@ -20,8 +20,8 @@ class ReduceLPContext:
         :param xadd:
         """
         self.LPContext = context
-        self.set_to_implied_set = {}
-        self.set_to_nonimplied_set = {}
+        self.set_to_implied_set: Dict[FrozenSet[int], Set[int]] = {}
+        self.set_to_nonimplied_set: Dict[FrozenSet[int], Set[int]] = {}
         self.local_reduce_lp = None
         self.kwargs = kwargs
 
@@ -43,17 +43,7 @@ class ReduceLPContext:
             pass
 
     def flush_implications(self):
-        """
-        public void flushImplications() {
-        _mlImplications.clear();
-        _mlNonImplications.clear();
-        _mlImplicationsChild.clear();
-        _mlIntermediate.clear();
-        _hmIntermediate.clear();
-
-        _hmImplications.clear();
-        _hmNonImplications.clear();
-        """
+        """Flushes the caches of implied and non-implied sets"""
         self.set_to_implied_set.clear()
         self.set_to_nonimplied_set.clear()
         
@@ -154,25 +144,28 @@ class LocalReduceLP:
         node_id = self.reduce_lp_v2(node_id, test_dec, redundancy)
         return node_id
 
-    def is_test_implied(self, test_dec: set, dec: int) -> bool:
+    def is_test_implied(self, test_dec: Set[int], dec: int) -> bool:
         """Checks whether the decision associated with 'dec' is implied by the 
         decisions included in 'test_dec'
 
         Args:
-            test_dec (set): The set of decisions
-            dec (int): The ID of the decision that we want to test
+            test_dec (Set[int]): The set of decisions.
+            dec (int): The ID of the decision that we want to test.
 
         Returns:
-            bool: True if 'dec' is implied by 'test_dec' set; False otherwise
+            bool: True if 'dec' is implied by 'test_dec' set; False otherwise.
         """
         implied_set = self.reduce_lp_context.set_to_implied_set.get(frozenset(test_dec.copy()), None)
         if implied_set is not None and dec in implied_set:
             # When dec can easily be checked as implied (using impliedSet)
             return True
+
         non_implied_set = self.reduce_lp_context.set_to_nonimplied_set.get(frozenset(test_dec.copy()), None)
         if non_implied_set is not None and dec in non_implied_set:
             return False
 
+        if -dec in test_dec:
+            logger.warning(f"Checking if decision implies its negation! - {test_dec}")
         test_dec.add(-dec)  # If adding the negation of `dec` to `test_dec` makes it infeasible, then `test_dec` implies `dec`
         implied = self.is_infeasible(test_dec)
         test_dec.remove(-dec)
@@ -188,42 +181,52 @@ class LocalReduceLP:
             non_implied_set.add(dec)
         return implied
 
-    def is_infeasible(self, test_dec: set) -> bool:
+    def is_infeasible(self, test_dec: Set[int]) -> bool:
         """Checks whether a set of decisions contained in 'test_dec' is infeasible.
 
         Args:
-            test_dec (set): The set contatining IDs of decisions
+            test_dec (Set[int]): The set contatining IDs of decisions.
 
         Returns:
-            bool: True if infeasible; False otherwise
+            bool: True if infeasible; False otherwise.
         """
         infeasible = False
 
-        # Based on decisions, solve an LP with those constraints, and determine if feasible or infeasible
+        # Based on decisions, solve an LP with those constraints,
+        # and determine if feasible or infeasible.
         self.lp = LP(self.context) if not self.lp else self.lp
         lp = self.lp
 
-        # Remove all previously set constraints and reset the objective
+        # Remove all previously set constraints and reset the objective.
         lp.reset()
         lp.set_objective(1)
 
-        # Add constraints as given by decisions in test_dec
+        # Add constraints as given by decisions in test_dec.
         for dec in test_dec:
             lp.add_decision(dec)
 
-        # Optimize the model to see if infeasible
+        # Optimize the model to see if infeasible.
         try:
             status = lp.solve()
         except Exception as e:
             logger.error(str(e))
             exit(1)
 
+        if status == pl.LpStatusUndefined:
+            logger.warning("Undefined status during Test 1?")
+            logger.info("Setting DualReductions to 0 and trying again.")
+            self.model.toggle_direct_solver_on()
+            self.model.setParam('DualReductions', 0)
+            status = self.solve()
+            self.model.setParam('DualReductions', 1)
+            self.model.toggle_direct_solver_off()
+
         if status == pl.LpStatusInfeasible:
             infeasible = True
         if infeasible:
             return infeasible
 
-        ## Test 2: test slack
+        ## Test 2: test slack.
         infeasible = lp.test_slack(test_dec)
         return infeasible
     
@@ -391,9 +394,9 @@ class LP:
             self._lhs_expr_to_pulp[expr] = pulp_expr
             return pulp_expr
 
-    def test_slack(self, test_dec):
-        """
-        In this test, check the value of slack variable, S.
+    def test_slack(self, test_dec: Set[int]):
+        """Checks the value of slack variable, S.
+
         For each constraint a.T @ w + b >= 0, the slack is the greatest value S > 0 s.t. a.T @ w + b - S >= 0
         For each constraint a.T @ w + b <= 0, the slack is the greatest value S > 0 s.t. a.T @ w + b + S <= 0
 
@@ -405,12 +408,12 @@ class LP:
             return infeasible
         
         # Remove all pre-existing constraints
-        self.model.reset()
+        self.model.reset_constraints()
 
         # Define a positive slack variable and set it as the objective for maximization
-        S = self.model.getVarByName('S')
+        S = self.model.getVarByName('Slack')
         if S is None:
-            S = self.model.addVar(lb=0, name='S')
+            S = self.model.addVar(lb=0, name='Slack')
         self.model.setObjective(S)
 
         # Reset constraint for each decision in test_dec
@@ -420,7 +423,9 @@ class LP:
 
             dec_expr = self.context._id_to_expr[-dec] if negated else self.context._id_to_expr[dec]
             if isinstance(dec_expr, core.Rel):
-                lhs, rel = dec_expr.args[0], REL_TYPE[type(dec_expr)]
+                lhs, rhs = dec_expr.args
+                assert rhs == 0, "RHS of a relational expression should always be 0 by construction!"
+                rel = REL_TYPE[type(dec_expr)]
                 lhs_pulp = self.convert_expr(lhs)
                 
                 if negated: rel = REL_NEGATED[rel]
@@ -458,7 +463,7 @@ class LP:
         if status == pl.LpStatusInfeasible:
             logger.warning("Infeasibility at test 2 should not have occurred!")
             infeasible = True
-        elif status != pl.LpStatusUnbounded and opt_obj < 1e-4:
+        elif status != pl.LpStatusUnbounded and opt_obj < 1e-40:
             infeasible = True
 
         return infeasible
