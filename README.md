@@ -367,7 +367,7 @@ P(b1):
 )
 ```
 
-As expected, the obtained `P(b1)` is a function of only `b1` variable, and the probabilities sum up to `1`. Importantly, 
+As expected, the obtained `P(b1)` is a function of only `b1` variable, and the probabilities sum up to `1`.
 
 
 2. Prod out
