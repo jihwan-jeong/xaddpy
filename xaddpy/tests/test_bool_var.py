@@ -143,8 +143,40 @@ def test_reduce_lp():
     print(f"\nAfter reduce_lp: \n{context.get_repr(res)}")
 
 
+def test_op_out():
+    context = XADD()
+    cwd = Path.cwd()
+    fname = cwd / "xaddpy/tests/ex/bool_prob.xadd"
+
+    orig_dd = context.import_xadd(fname)
+    print(f"Original XADD: \n{context.get_repr(orig_dd)}")
+
+    # Get the symbols.
+    b1, b2, b3 = [BooleanVar(core.Symbol(s)) for s in ['b1', 'b2', 'b3']]
+
+    # sum_out b3.
+    b3_id, _ = context.get_dec_expr_index(b3, create=True)
+    res = context.op_out(orig_dd, b3_id, op='add')
+    print(f"op_out b3: \n{context.get_repr(res)}")
+
+    # sum_out b1.
+    b1_id = context._expr_to_id[b1]
+    res = context.op_out(orig_dd, b1_id, op='add')
+    print(f"op_out b1: \n{context.get_repr(res)}")
+
+    # sum_out b2.
+    b2_id = context._expr_to_id[b2]
+    res = context.op_out(orig_dd, b2_id, op='add')
+    print(f"op_out b2: \n{context.get_repr(res)}")
+
+    # prod_out b3.
+    res = context.op_out(orig_dd, b3_id, op='prod')
+    print(f"op_out b3: \n{context.get_repr(res)}")
+
+
 if __name__ == "__main__":
     test_bvar_subs()
     test_mixed_subs()
     test_mixed_eval()
     test_reduce_lp()
+    test_op_out()
