@@ -2190,8 +2190,8 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
         # lower bound over 'var' is the maximum among lower bounds.
         xadd_lower_bound = -1
         for e in lower_bound:
-            xadd_lower_bound = self._context.get_leaf_node(e)
-                                if xadd_lower_bound == -1
+            xadd_lower_bound = self._context.get_leaf_node(e) \
+                                if xadd_lower_bound == -1 \
                                 else self._context.apply(
                                     xadd_lower_bound,
                                     self._context.get_leaf_node(e),
@@ -2199,8 +2199,8 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
 
         xadd_upper_bound = -1
         for e in upper_bound:
-            xadd_upper_bound = self._context.get_leaf_node(e)
-                                if xadd_upper_bound == -1
+            xadd_upper_bound = self._context.get_leaf_node(e) \
+                                if xadd_upper_bound == -1 \
                                 else self._context.apply(
                                     xadd_upper_bound,
                                     self._context.get_leaf_node(e),
@@ -2423,8 +2423,8 @@ class XADDLeafMinOrMax(XADDLeafOperation):
         # lower bound over 'var' is the maximum among lower bounds.
         xadd_lower_bound = -1
         for e in lower_bound:
-            xadd_lower_bound = self._context.get_leaf_node(e)
-                                if xadd_lower_bound == -1
+            xadd_lower_bound = self._context.get_leaf_node(e) \
+                                if xadd_lower_bound == -1 \
                                 else self._context.apply(
                                     xadd_lower_bound,
                                     self._context.get_leaf_node(e),
@@ -2432,8 +2432,8 @@ class XADDLeafMinOrMax(XADDLeafOperation):
 
         xadd_upper_bound = -1
         for e in upper_bound:
-            xadd_upper_bound = self._context.get_leaf_node(e)
-                                if xadd_upper_bound == -1
+            xadd_upper_bound = self._context.get_leaf_node(e) \
+                                if xadd_upper_bound == -1 \
                                 else self._context.apply(
                                     xadd_upper_bound,
                                     self._context.get_leaf_node(e),
