@@ -89,14 +89,14 @@ Below is a part of the XADD written in [xaddpy/tests/ex/bool_cont_mixed.xadd](xa
                 ([x])
                 ([y])
             )
-            (b3
+            ( [b3]
                 ([2 * x])
                 ([2 * y])
             )
         )
 ...
 ```
-Here, `[x-y <= 0]` defines a decision expression; its true branch is another node with the decision `[2 * x + y <= 0]`, while the decision of the false branch is a Boolean variable `b3`. Similarly, if `[2 * x + y <= 0]` holds true, then we get the leaf value `[x]`; otherwise, we get `[y]`. Inequality decisions and leaf values are wrapped with brackets, while you can directly put the variable name in the case of a Boolean decision. A Sympy `Symbol` object will be created for each unique variable.
+Here, `[x-y <= 0]` defines a decision expression; its true branch is another node with the decision `[2 * x + y <= 0]`, while the decision of the false branch is a Boolean variable `b3`. Similarly, if `[2 * x + y <= 0]` holds true, then we get the leaf value `[x]`; otherwise, we get `[y]`. _All expressions should be wrapped with brackets, including Boolean variables._ A SymEngine `Symbol` object will be created for each unique variable.
 
 To load this XADD, you can do the following:
 ```python
@@ -106,7 +106,7 @@ fname = 'xaddpy/tests/ex/bool_cont_mixed.xadd'
 
 orig_xadd = context.import_xadd(fname)
 ```
-Following the Java implementation, we call the instantiated XADD object `context`. This object maintains and manages all existing/new nodes and decision expressions. For example, `context._id_to_node` is a Python dictionary that stores mappings from node IDs (int) to the corresponding `Node` objects. For more information, please refer to the constructor of the `XADD` class.
+Following the Java implementation, we call the instantiated XADD object `context`. This object maintains and manages all existing/new nodes and decision expressions. For example, `context._id_to_node` is a Python dictionary that stores mappings from node IDs (`int`) to the corresponding `Node` objects. For more information, please refer to the [constructor of the `XADD` class](xaddpy/xadd/xadd.py#L57).
 
 To check whether you've got the right XADD imported, you can print it out.
 ```python
@@ -119,12 +119,12 @@ Another way of creating an initial XADD node is by recursively building it with 
 
 ```python
 from xaddpy import XADD
-import sympy as sp
+import symengine.lib.symengine_wrapper as core
 
 context = XADD()
 
-x_id = context.convert_to_xadd(sp.Symbol('x'))
-y_id = context.convert_to_xadd(sp.Symbol('y'))
+x_id = context.convert_to_xadd(core.Symbol('x'))
+y_id = context.convert_to_xadd(core.Symbol('y'))
 
 sum_node_id = context.apply(x_id, y_id, op='add')
 comp_node_id = context.apply(sum_node_id, y_id, op='min')
@@ -160,21 +160,21 @@ Finally, you might want to build a constant node, an arbitrary decision expressi
 )
 ```
 
-To do this, we will first create an internal node whose decision is `[x + y <= 0]`, the low   and the high branches are `[0]` and `[2]` (respectively). Using Sympy's `S` function (or you can use `sympify`), you can turn an algebraic expression involving variables and numerics into a symbolic expression. Given this decision expression, you can get its unique index using `XADD.get_dec_expr_index` method. You can use the decision ID along with the ID of the low and high nodes connected to the decision to create the corresponding decision node, using `XADD.get_internal_node`.
+To do this, we will first create an internal node whose decision is `[x + y <= 0]`, the low and the high branches are `[0]` and `[2]` (respectively). Using `SymEngine`'s `S` function (or you can use `sympify`), you can turn an algebraic expression involving variables and numerics into a symbolic expression. Given this decision expression, you can get its unique index using `XADD.get_dec_expr_index` method. You can use the decision ID along with the ID of the low and high nodes connected to the decision to create the corresponding decision node, using `XADD.get_internal_node`.
 
 ```python
-import sympy as sp
+import symengine.lib.symengine_wrapper as core
 from xaddpy import XADD
 
 context = XADD()
 
 # Get the unique ID of the decision expression
-dec_expr: sp.Basic = sp.S('x + y <= 0')
+dec_expr: core.Basic = core.S('x + y <= 0')
 dec_id, is_reversed = context.get_dec_expr_index(dec_expr, create=True)
 
 # Get the IDs of the high and low branches: [0] and [2], respectively
-high: int = context.get_leaf_node(sp.S(0))
-low: int = context.get_leaf_node(sp.S(2))
+high: int = context.get_leaf_node(core.S(0))
+low: int = context.get_leaf_node(core.S(2))
 if is_reversed:
     low, high = high, low
 
@@ -188,24 +188,26 @@ Note that `XADD.get_dec_expr_index` returns a boolean variable `is_reversed` whi
 Another way of creating this node is to use the `XADD.get_dec_node` method. This method can only be used when the low and high nodes are terminal nodes containing leaf expressions.
 
 ```python
-dec_node_id = context.get_dec_node(dec_expr, low_val=sp.S(2), high_val=sp.S(0))
+dec_node_id = context.get_dec_node(dec_expr, low_val=core.S(2), high_val=core.S(0))
 ```
 
-Note also that you need to wrap constants with the `sympy.S` function to turn them into `sympy.Basic` objects.
+Note also that you need to wrap constants with the `core.S` function to turn them into `core.Basic` objects.
 
 Now, it remains to create a decision node with the Boolean variable `b` and connect it to its low and high branches. 
 
 ```python
-b = sp.Symbol('b', bool=True)
+from xaddpy.utils.symengine import BooleanVar
+
+b = BooleanVar(core.Symbol('b'))
 dec_b_id, _ = context.get_dec_expr_index(b, create=True)
 ```
 
-First of all, you need to provide `bool=True` as a keyword argument when instantiating a Sympy `Symbol` corresponding to a Boolean variable. When you instantiate multiple Boolean variables, you can use `b1, b2, b3 = sp.symbols('b1 b2 b3', bool=True)`. If you didn't specify `bool=True`, then the variable won't be recognized as a Boolean variable in XADD operations!
+First of all, you need to import and instantiate a `BooleanVar` object for a Boolean variable. Otherwise, the variable won't be recognized as a Boolean variable in XADD operations!
 
 Once you have the decision ID, we can finally link this decision node with the node created earlier. 
 
 ```python
-high: int = context.get_leaf_node(sp.S(1))
+high: int = context.get_leaf_node(core.S(1))
 node_id: int = context.get_internal_node(dec_b_id, low=dec_node_id, high=high)
 print(f"Node created:\n{context.get_repr(node_id)}")
 ```
@@ -251,6 +253,8 @@ You can also apply the following unary operators to a single XADD node recursive
 - 'sqrt', 'pow'
 - '-', '+'
 - 'sgn' (sign function... sgn(x) = 1 if x > 0; 0 if x == 0; -1 otherwise)
+- 'abs'
+- 'float', 'int'
 - '~' (negation)
 
 The `pow` operation requires an additional argument specifying the exponent.
@@ -260,7 +264,7 @@ When you want to assign concrete values to Boolean and continuous variables, you
 
 As another example, let's say we want to evaluate the XADD node defined a few lines above.
 ```python
-x, y = sp.symbols('x y')
+x, y = core.symbols('x y')
 
 bool_assign = {b: True}
 cont_assign = {x: 2, y: -1}
@@ -280,7 +284,7 @@ print(f"Result: {res}")
 If we change the value of `b`, we can see that we get `2`. Note that you have to make sure that all symbolic variables get assigned specific values; otherwise, the function will return `None`. 
 
 #### XADD.substitute(node_id: int, subst_dict: dict)
-If instead you want to assign values to a subset of symbolic variables while leaving the other variables as-is, you can use the `substitute` method. Similar to `evaluate`, you need to pass in a dictionary mapping Sympy `Symbol`s to their concrete values.
+If instead you want to assign values to a subset of symbolic variables while leaving the other variables as-is, you can use the `substitute` method. Similar to `evaluate`, you need to pass in a dictionary mapping SymEngine `Symbol`s to their concrete values.
 
 For example,
 
@@ -300,10 +304,10 @@ Result:
         )  
 ) 
 ```
-as expected. 
+as expected.
 
 #### XADD.collect_vars(node_id: int)
-If you want to extract all Boolean and continuous Sympy variables existing in an XADD node, you can use this method.
+If you want to extract all Boolean and continuous symbols existing in an XADD node, you can use this method.
 
 ```python
 var_set = context.collect_vars(node_id)
@@ -318,6 +322,149 @@ This method can be useful to figure out which variables need to have values assi
 
 #### XADD.make_canonical(node_id: int)
 This method gives a canonical order to an XADD that is potentially unordered. Note that the `apply` method already calls `make_canonical` when the `op` is one of `('min', 'max', '!=', '==', '>', '>=', '<', '<=', 'or', 'and')`.
+
+
+#### Variable Elimination
+
+1. Sum out: `XADD.op_out(node_id: int, dec_id: int, op: str = 'add')`
+
+Let's say we have a joint probability distribution function over Boolean variables `b1, b2`, i.e., `P(b1, b2)` as in the following example. `P(b1, b2)=`
+
+```
+( [b1]
+    ( [b2] 
+        ( [0.25] )
+        ( [0.3] )
+    )
+    ( [b2]
+        ( [0.1] )
+        ( [0.35] )
+    )
+)
+```
+Notice that the values are non-negative and sum up to one, making this a valid probability distribution. Now, one may be interested in marginalizing out a variable `b2` to get `P(b1) = \sum_{b2} P(b1, b2)`. This can be done in XADD by using the `op_out` method.
+
+Let's directly dive into an example:
+
+```python
+# Load the joint probability as XADD
+p_b1b2 = context.import_xadd('xaddpy/tests/ex/bool_prob.xadd')
+
+# Get the decision index of `b2`
+b2 = BooleanVar(core.Symbol('b2'))
+b2_dec_id, _ = context.get_dec_expr_index(b2, create=False)
+
+# Marginalize out `b2`
+p_b1 = context.op_out(node_id=p_b1b2, dec_id=b2_dec_id, op='add')
+print(f"P(b1): \n{context.get_repr(p_b1)}")
+```
+```
+Output: 
+P(b1): 
+( [b1]  (dec, id): 1, 26
+        ( [0.55] ) node_id: 25 
+        ( [0.45] ) node_id: 24 
+)
+```
+
+As expected, the obtained `P(b1)` is a function of only `b1` variable, and the probabilities sum up to `1`. Importantly, 
+
+
+2. Prod out
+
+Similarly, if we specify `op='prod'`, we can 'prod out' a Boolean variable from a given XADD.
+
+3. Max out (or min out) continuous variables: `XADD.min_or_max_var(node_id: int, var: VAR_TYPE, is_min: bool)`
+
+One of the most interesting and useful applications of symbolic variable elimination is 'maxing out' or 'minning out' **continuous** variable(s) from a symbolic function. See [Jeong et al. (2023)](https://ssanner.github.io/papers/cpaior23_dblpsve.pdf) and [Jeong et al. (2022)](https://proceedings.mlr.press/v162/jeong22a/jeong22a.pdf) for more detailed discussions. Look up the `min_or_max_var` method in the xadd.py file. For now, we only support optimizing a linear or disjointly bilinear expressions at the leaf values and decision expressions.
+
+As a concrete toy example, imagine the problem of inventory management. There is a Boolean variable `d` which denotes the level of demand (i.e., `d=True` if demand is high; otherwise `d=False`). Let's say the current inventory level of a product of interest is `x \in [-1000, 1000]`. Suppose we can place an order of amount `a \in [0, 500]` for this product. And we will have the following reward based on the current demand, inventory level, and the new order:
+```
+( [d]
+    ( [x >= 150]
+        ( [150 - 0.1 * a - 0.05 * x ] )
+        ( [(x - 150) - 0.1 * a - 0.05 * x] )
+    )
+    ( [x >= 50]
+        ( [50 - 0.1 * a - 0.05 * x] )
+        ( [(x - 50) - 0.1 * a - 0.05 * x] )
+    )
+)
+```
+Though it is natural to consider multi-step decisions for this kind of problem, let's only focus on optimizing this reward for a single step, for the sake of simplicity and illustration.
+
+So, given this reward, what we might be interested in is the maximum reward we can obtain, subject to the demand level and the current inventory level. That is, we want to compute `max_a reward(a, x, d)`.
+
+```python
+# Load the reward function as XADD
+reward_dd = context.import_xadd('xaddpy/tests/ex/inventory.xadd')
+
+# Update the bound information over variables of interest
+a, x = core.Symbol('a'), core.Symbol('x')
+context.update_bounds({a: (0, 500), x: (-1000, 1000)}) 
+
+# Max out the order quantity
+max_reward_d_x = context.min_or_max_var(reward_dd, a, is_min=False, annotate=True)
+print(f"Maximize over a: \n{context.get_repr(max_reward_d_x)}")
+```
+```
+Output:
+Maximize over a: 
+( [d]   (dec, id): 1, 82
+        ( [-150 + x <= 0]       (dec, id): 10002, 81
+                ( [-150 + 0.95*x] ) node_id: 72 anno: 0 
+                ( [150 - 0.05*x] ) node_id: 58 anno: 0 
+        )  
+        ( [-50 + x <= 0]        (dec, id): 10003, 51
+                ( [-50 + 0.95*x] ) node_id: 42 anno: 0 
+                ( [50 - 0.05*x] ) node_id: 29 anno: 0 
+        )  
+)
+```
+To obtain this result, note that we should provide the bound information over the continuous variables. If not, then `(-oo, oo)` will be used as the bounds.
+
+If we want to know which values of `a` will yield the optimal outcomes, we can apply the argmax operation. Specifically,
+
+```python
+argmax_a_id = context.reduced_arg_min_or_max(max_reward_d_x, a)
+print(f"Argmax over a: \n{context.get_repr(argmax_a_id)}")
+```
+```
+Output:
+Argmax over a: 
+( [0] ) node_id: 0
+```
+Trivially in this case, not ordering any new products will maximize the one-step reward, which makes sense. A more interesting case would, of course, be when we have to make sequential decisions taking into account stochastic demands and the product level that changes according to the order amount and the demand. For this kind of problems, we suggest you take a look at [Symbolic Dynamic Programming (SDP)](https://github.com/ataitler/pyRDDLGym/blob/sdp-symengine/run_examples/run_vi.py).
+
+Now, if we further optimize the `max_reward_d_x` over `x` variable, we get the following:
+```python
+# Max out the inventory level
+max_reward_d = context.min_or_max_var(max_reward_d_x, x, is_min=False, annotate=True)
+print(f"Maximize over x: \n{context.get_repr(max_reward_d)}")
+
+# Get the argmax over x
+argmax_x_id = context.reduced_arg_min_or_max(max_reward_d, x)
+print(f"Argmax over x: \n{context.get_repr(argmax_x_id)}")
+```
+
+```
+Output:
+Maximize over x: 
+( [d]   (dec, id): 1, 105
+        ( [142.5] ) node_id: 102 anno: 99 
+        ( [47.5] ) node_id: 89 anno: 85 
+)
+Argmax over x: 
+( [d]   (dec, id): 1, 115
+        ( [150] ) node_id: 99 
+        ( [50] ) node_id: 85 
+)
+```
+The results tells us that the maximum achievable reward is 142.5 when `d=True, x=150` or 47.5 when `d=False, x=50`.
+
+4. Max (min) out Boolean variables with `XADD.min_or_max_var`
+
+Eliminating Boolean variables with max or min operations can be easily done by using the previously discussed `min_or_max_var` method. You just need to pass the Boolean variable to the method.
 
 
 ## Citation

@@ -32,7 +32,7 @@ def parse_xadd_grammar(s):
                 # Extrat the whole expression.
                 s_chunk = s[expression_start: i + 1]    # Include the closing bracket.
                 push(s_chunk, groups, depth)
-                push(sympify(s_chunk.strip('([])')), symLst, depth)
+                push(sympify(s_chunk.strip('[]')), symLst, depth)
                 i += 1  # Move past the closing bracket.
 
             elif s[i] == '(':

@@ -8,6 +8,7 @@ import warnings
 import numpy as np
 from symengine import oo
 import symengine.lib.symengine_wrapper as core
+import sympy as sp
 
 try:
     from xaddpy.utils.graph import Graph
@@ -32,6 +33,7 @@ from xaddpy.xadd.xadd_parse_utils import parse_xadd_grammar
 USE_APPLY_GET_INODE_CANON = False
 LARGE_INTEGER = 10000
 VAR_TYPE = core.Symbol | BooleanVar | RandomVar
+DECISION_TYPE = core.Rel | BooleanVar | RandomVar   # RandomVar?
 
 
 def default_ordering(context, expr: core.Basic) -> int:
@@ -101,7 +103,7 @@ class XADD:
         self._expr_to_id_new = {}
 
         # Reduce & Apply caches
-        self._reduce_cache = {}
+        self._reduce_cache: Dict[Tuple[int, int, str], int] = {}
         self._reduce_leafop_cache = {}
         self._reduce_canon_cache = {}
 
@@ -410,7 +412,7 @@ class XADD:
     
     def evaluate_decision(
             self,
-            dec_expr: core.Basic,
+            dec_expr: DECISION_TYPE,
             bool_assign: Dict[core.Symbol, Union[core.BooleanAtom, bool]], 
             cont_assign: Dict[core.Symbol, Union[int, float]], 
     ) -> Union[bool, None]:
@@ -1094,25 +1096,23 @@ class XADD:
     def reduce_op(self, node_id: int, dec_id: int, op: str) -> int:
         node = self.get_exist_node(node_id)
 
-        # A terminal node should be reduced (and cannot be restricted)
-        # by default if hashing and equality testing are working in getLeafNode
+        # A terminal node should be reduced (and cannot be restricted).
         if node.is_leaf():
-            return node_id      # Assuming that to have a node id means canonical
+            return node_id
 
-        # If its an internal node, check the reduce cache
+        # If it's an internal node, check the reduce cache.
         temp_reduce_key = (node_id, dec_id, op)
-        ret = self._reduce_cache.get(temp_reduce_key, None)
+        ret = self._reduce_cache.get(temp_reduce_key)
         if ret is not None:
             return ret
-        
+
         node = cast(XADDINode, node)
         if (op != "restrict_high") or (dec_id != node.dec):
             low = self.reduce_op(node.low, dec_id, op)
         if (op != "restrict_low") or (dec_id != node.dec):
             high = self.reduce_op(node.high, dec_id, op)
-        #if (op != -1 & & var_id != -1 & & var_id == inode._var) {
         if (dec_id != -1) and (dec_id == node.dec):
-            # ReduceOp
+            # ReduceOp.
             if op == "restrict_low":
                 ret = low
             elif op == "restrict_high":
@@ -1124,7 +1124,7 @@ class XADD:
         else:
             ret = self.get_internal_node(node.dec, low, high)
 
-        # Put return value in cache and return
+        # Put return value in cache and return.
         self._reduce_cache[temp_reduce_key] = ret
         return ret
 
@@ -1133,7 +1133,7 @@ class XADD:
         var_set = node.collect_vars()
         return var_set
 
-    def reduced_arg_min_or_max(self, node_id: int, var) -> int:
+    def reduced_arg_min_or_max(self, node_id: int, var: VAR_TYPE) -> int:
         arg_id = self.get_arg(node_id)
         arg_id = self.reduce_lp(arg_id)
         self.update_anno(var, arg_id)
@@ -1146,11 +1146,13 @@ class XADD:
 
     def get_arg_int(self, node_id: int) -> int:
         """
-        node_id is the id of a min/max XADD node. 
+        node_id is the id of a min/max XADD node.
         var is the decision variable that was max(min)imized out to result in node_id. 
         Recursively build the annotation XADD for var.
-        :param node_id:             (int)
-        :return:
+        Args:
+            node_id:    (int) XADD node ID.
+        Returns:
+            int: The resulting XADD node ID.
         """
         node = self.get_exist_node(node_id)
 
@@ -1177,7 +1179,7 @@ class XADD:
     def get_annotation(self, var: core.Symbol) -> int:
         return self._var_to_anno[var]
 
-    def update_anno(self, var: core.Symbol, anno: int):
+    def update_anno(self, var: VAR_TYPE, anno: int):
         if not hasattr(self, '_var_to_anno'):
             self._var_to_anno: Dict[core.Symbol, int] = {}
         self._var_to_anno[var] = anno
@@ -1213,27 +1215,46 @@ class XADD:
         res = min_or_max._running_result
         return res
 
-    def min_or_max_var(self, node_id, var, is_min=True):
+    def min_or_max_var(
+            self,
+            node_id: int,
+            var: VAR_TYPE,
+            is_min: bool = True,
+            annotate: bool = False,
+    ) -> int:
         """
         Given an XADD root node 'node_id', minimize (or maximize) 'var' out.
-        :param node_id:      (int)
-        :param var:                 (core.Symbol)
-        :return:                    (int)
+
+        Args:
+            node_id:    (int) XADD node ID.
+            var:        (VAR_TYPE) variable to minimize (or maximize).
+            is_min:     (bool) True if minimize, False if maximize.
+            annotate:   (bool) True if annotate the argmax(min), False otherwise.
+        
+        Returns:
+            int: The resulting XADD node ID.
         """
         # Check if binary variable
-        if var in self._bool_var_set:
+        if var in self._bool_var_set or isinstance(var, BooleanVar):
             op = "min" if is_min else "max"
             self._opt_var = var
             subst_high = {var: True}
             subst_low = {var: False}
             restrict_high = self.substitute_bool_vars(node_id, subst_high)
             restrict_low = self.substitute_bool_vars(node_id, subst_low)
-            running_result = self.apply(restrict_high, restrict_low, op=op, annotation=(self.ONE, self.ZERO))
+            annotation = (self.TRUE, self.FALSE) if annotate else None
+            running_result = self.apply(restrict_high, restrict_low, op=op, annotation=annotation)
             running_result = self.reduce_lp(running_result)
         # Continuous variables
         else:
             decisions, decision_values = [], []
-            min_or_max = XADDLeafMinOrMax(var, is_max=False if is_min else True, bound_dict=self._var_to_bound, context=self)
+            min_or_max = XADDLeafMinOrMax(
+                var,
+                is_max=False if is_min else True,
+                bound_dict=self._var_to_bound,
+                context=self,
+                annotate=annotate,
+            )
             _ = self.reduce_process_xadd_leaf(node_id, min_or_max, decisions, decision_values)
             running_result = min_or_max._running_result
         return running_result
@@ -1288,6 +1309,12 @@ class XADD:
         node_id = self.get_internal_node(node.dec, low=low, high=high)
 
         return node_id
+
+    def compute_definite_integral(self, node_id: int, var: core.Symbol) -> int:
+        """Computes a definite integral over a variable in an XADD."""
+        integrator = XADDLeafDefIntegral(var, self)
+        _ = self.reduce_process_xadd_leaf(node_id, integrator, [], [])
+        return integrator._running_sum
 
     def get_repr(self, node_id: int) -> str:
         # For printing out the representation
@@ -1352,7 +1379,7 @@ class XADD:
 
     def get_dec_node(
             self, 
-            dec_expr: Union[core.Rel, BooleanVar],
+            dec_expr: DECISION_TYPE,
             low_val: core.Basic, 
             high_val: core.Basic
     ) -> int:
@@ -1825,7 +1852,9 @@ class XADDLeafOperation(metaclass=abc.ABCMeta):
         self._require_canonical = False
 
     @abc.abstractmethod
-    def process_xadd_leaf(self, decisions, decision_values, leaf_val):
+    def process_xadd_leaf(
+        self, decisions: List[DECISION_TYPE], decision_values: List[bool], leaf_val: core.Basic
+    ) -> int:
         pass
 
 
@@ -1852,7 +1881,12 @@ class ControlFlow(XADDLeafOperation):
         self._true_branch = true_branch
         self._false_branch = false_branch
 
-    def process_xadd_leaf(self, decisions: list, decision_values: list, leaf_val: core.Basic):
+    def process_xadd_leaf(
+            self,
+            decisions: List[DECISION_TYPE],
+            decision_values: List[bool],
+            leaf_val: core.Basic
+    ) -> int:
         assert check_sym_boolean(leaf_val) or leaf_val == 1 or leaf_val == 0
         
         if isinstance(leaf_val, core.BooleanAtom):
@@ -1890,7 +1924,12 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
         self._subVar = sub_var
         self._is_linear = is_linear
 
-    def process_xadd_leaf(self, decisions, decision_values, leaf_val):
+    def process_xadd_leaf(
+            self,
+            decisions: List[DECISION_TYPE],
+            decision_values: List[bool],
+            leaf_val: core.Basic
+    ) -> int:
         self._leafSubs = {}
         
         if leaf_val == core.nan:
@@ -1910,6 +1949,82 @@ class DeltaFunctionSubstitution(XADDLeafOperation):
             if self._is_linear:
                 ret = self._context.reduce_lp(ret)
             return ret
+
+
+class XADDLeafIndefIntegral(XADDLeafOperation):
+    """Class for indefinite integral."""
+
+    def __init__(
+        self,
+        var: core.Symbol,
+        context: XADD,
+    ):
+        super().__init__(context)
+        self.var = var
+
+    def process_xadd_leaf(
+            self,
+            decisions: List[DECISION_TYPE],
+            decision_values: List[bool],
+            leaf_val: core.Basic
+    ) -> int:
+        # Return an XADD for the resulting expression.
+        sympy_expr = leaf_val._sympy_()
+        sympy_var = self.var._sympy_()
+        sympy_integral = sp.integrate(sympy_expr, sympy_var)
+        integral = core.sympify(sympy_integral)
+        return self._context.get_leaf_node(integral)
+
+
+class XADDLeafDefIntegral(XADDLeafIndefIntegral):
+    """Class for definite integral."""
+
+    def __init__(
+        self,
+        var: core.Symbol,
+        context: XADD,
+    ):
+        super().__init__(var, context)
+        self._running_sum = context.ZERO
+
+    def process_xadd_leaf(
+            self,
+            decisions: List[DECISION_TYPE],
+            decision_values: List[bool],
+            leaf_val: core.Basic
+    ) -> int:
+        """Process the leaf node to compute a definite integral.
+        
+        * Determine if this will be a delta integral or not:
+            i. if we encounter a delta function here that contains
+                the variable then one of them has to be linear in
+                the variable, otherwise we exit.
+            ii. if find delta linear in variable then we extract substitution
+                and make it to all remaining terms -- delta and non-delta --
+                and return that result.
+            iii. if delta's but do not contain variable then factor
+                these out for multiplication in at the end.
+            iv. what to do on encountering summation?  breaks into
+                individual subproblems of the above, all results summed together!
+        """
+        int_var_indep_decisions = {}
+
+        # Upper and lower bounds based on the decisions.
+        lower_bound, upper_bound = [], []
+
+        for dec_expr, is_true in zip(decisions, decision_values):
+            if isinstance(dec_expr, BooleanVar):
+                int_var_indep_decisions[dec_expr] = is_true
+                continue
+            assert isinstance(dec_expr, core.Rel), (
+                f'Expected a relational expression, but got {dec_expr}'
+                f' of type {type(dec_expr)}'
+            )
+            lhs, rhs = dec_expr.args
+            assert rhs == 0, (
+                f'Expected the rhs of the decision to be 0, but got {rhs}'
+            )
+        raise RuntimeError("Not implemented yet")
 
 
 class XADDLeafMultivariateMinOrMax(XADDLeafOperation):

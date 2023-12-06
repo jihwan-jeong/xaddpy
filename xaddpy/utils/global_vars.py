@@ -26,7 +26,7 @@ UNARY_OP = {
     'sin': core.sin, 'cos': core.cos, 'tan': core.tan, 'exp': core.exp, 'abs': abs,
     'log': core.log, 'log2': lambda x: core.log(x, 2), 'log10': lambda x: core.log(x, 10),
     'tanh': core.tanh, 'cosh': core.cosh, 'sinh': core.sinh,
-    'sqrt': core.sqrt, 'pow': lambda x, n: core.Pow(x, n), 
+    'sqrt': core.sqrt, 'pow': lambda x, n: core.Pow(x, n),
     'floor': core.floor, 'ceil': core.ceiling,
     'log1p': log1p, '-': lambda x: -x, '+': lambda x: x,
     'int': lambda x, *args: 1 if x else 0,

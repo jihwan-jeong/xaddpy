@@ -1,5 +1,6 @@
 import symengine.lib.symengine_wrapper as core
 
+from xaddpy.utils.symengine import BooleanVar
 from xaddpy.xadd.xadd import XADD
 
 
@@ -48,5 +49,21 @@ def test_xadd():
     return
 
 
+def test_op_out():
+    context = XADD()
+
+    # Load the joint probability as XADD
+    p_b1b2 = context.import_xadd('xaddpy/tests/ex/bool_prob.xadd')
+
+    # Get the decision index of `b2`
+    b2 = BooleanVar(core.Symbol('b2'))
+    b2_dec_id, _ = context.get_dec_expr_index(b2, create=False)
+
+    # Marginalize out `b2`
+    p_b1 = context.op_out(node_id=p_b1b2, dec_id=b2_dec_id, op='add')
+    print(f"P(b1): \n{context.get_repr(p_b1)}")
+
+
 if __name__ == "__main__":
     test_xadd()
+    test_op_out()
