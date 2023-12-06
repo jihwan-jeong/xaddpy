@@ -447,7 +447,7 @@ def build_xadd_from_json(
     # is_minimize?
     is_min = True if prob_instance['is-minimize'] else False
 
-    # Create Sympy symbols for cvariables and bvariables
+    # Create SymEngine symbols for cvariables and bvariables
     if len(prob_instance['cvariables0']) == 1 and isinstance(prob_instance['cvariables0'][0], int):
         cvariables0 = sym.symbols(' '.join([f'x{i}' for i in range(1, prob_instance['cvariables0'][0]+1)]))
     else:

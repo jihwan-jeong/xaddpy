@@ -104,7 +104,7 @@ class XADD:
 
         # Reduce & Apply caches
         self._reduce_cache: Dict[Tuple[int, int, str], int] = {}
-        self._reduce_leafop_cache = {}
+        self._reduce_leafop_cache: Dict[Tuple[int, Any], int] = {}
         self._reduce_canon_cache = {}
 
         self._apply_cache = {}
@@ -1067,9 +1067,14 @@ class XADD:
     def substitute_bool_vars(self, node_id: int, subst_dict: dict) -> int:
         """
         Symbolic substitution method for bool variables.
-        :param node_id:             (int)
-        :param subst_dict:          (dict)
-        :return:
+        
+        Args:
+            node_id (int): The ID of the node to be updated.
+            subst_dict (dict): A dictionary of substitutions.
+                A key is a Boolean variable and a value is a Boolean value.
+
+        Returns:
+            int: The ID of the resulting node.
         """
         assert all(
                     map(lambda x: isinstance(x, core.BooleanAtom) or isinstance(x, bool), subst_dict.values())
@@ -1084,10 +1089,36 @@ class XADD:
                     node_id = self.op_out(node_id, dec_id, "restrict_low")
         return node_id
 
-    def op_out(self, node_id: int, dec_id: int, op: str):
+    def op_out(self, node_id: int, dec_id: int, op: str) -> int:
+        """Implements variable elimination of a Boolean decision variable.
+        
+        Args:
+            node_id (int): The ID of the node to which the operation is applied.
+            dec_id (int): The ID of the decision variable to be eliminated.
+            op (str): The operation to be applied.
+                'restrict_low': Eliminate the decision variable by setting it to False.
+                'restrict_high': Eliminate the decision variable by setting it to True.
+                'add': Sum out the decision variable.
+                'prod': Product out the decision variable.
+        
+        Returns:
+            int: The ID of the resulting node.
+        """
+        # Check if the node contains the decision variable.
+        v = self._id_to_expr[dec_id]
+        assert isinstance(v, BooleanVar), (
+            "`op_out` can only be applied to Boolean variables"
+            f"but the given expression is {v}"
+        )
+        # If does not contain the variable, apply the `op` to the node.
+        var_set = self.collect_vars(node_id)
+        if v not in var_set:
+            return self.apply(node_id, node_id, op)
+
+        # Otherwise, reduce.
         ret = self.reduce_op(node_id, dec_id, op)
 
-        # Operations like sum and product may get decisions out of order
+        # Operations like sum and product may get decisions out of order.
         if op == 'add' or op == 'prod':
             return self.make_canonical(ret)
         else:
@@ -1128,7 +1159,7 @@ class XADD:
         self._reduce_cache[temp_reduce_key] = ret
         return ret
 
-    def collect_vars(self, node_id: int) -> set:
+    def collect_vars(self, node_id: int) -> Set[VAR_TYPE]:
         node = self.get_exist_node(node_id)
         var_set = node.collect_vars()
         return var_set
@@ -1149,6 +1180,7 @@ class XADD:
         node_id is the id of a min/max XADD node.
         var is the decision variable that was max(min)imized out to result in node_id. 
         Recursively build the annotation XADD for var.
+        
         Args:
             node_id:    (int) XADD node ID.
         Returns:
@@ -1187,8 +1219,11 @@ class XADD:
     def get_node(self, node_id: int) -> Node:
         """
         Retrieve a XADD node from cache.
-        :param node_id:             (int)
-        :return:
+        
+        Args:
+            node_id:    (int) XADD node ID.
+        Returns:
+            Node: The corresponding XADD node.
         """
         return self._id_to_node[node_id]
 
@@ -1198,7 +1233,7 @@ class XADD:
             var_lst: List[core.Symbol],
             is_min: bool = True,
             annotate: bool = True,
-    ):
+    ) -> int:
         """
         Given an XADD root node 'node_id', minimize (or maximize) variables in 'var_lst'.
         Supports only continuous variables.
@@ -1224,6 +1259,7 @@ class XADD:
     ) -> int:
         """
         Given an XADD root node 'node_id', minimize (or maximize) 'var' out.
+        Can also handle Boolean variables.
 
         Args:
             node_id:    (int) XADD node ID.
@@ -1234,7 +1270,7 @@ class XADD:
         Returns:
             int: The resulting XADD node ID.
         """
-        # Check if binary variable
+        # Check if Boolean.
         if var in self._bool_var_set or isinstance(var, BooleanVar):
             op = "min" if is_min else "max"
             self._opt_var = var
@@ -1245,7 +1281,7 @@ class XADD:
             annotation = (self.TRUE, self.FALSE) if annotate else None
             running_result = self.apply(restrict_high, restrict_low, op=op, annotation=annotation)
             running_result = self.reduce_lp(running_result)
-        # Continuous variables
+        # Continuous variables.
         else:
             decisions, decision_values = [], []
             min_or_max = XADDLeafMinOrMax(
@@ -1273,19 +1309,18 @@ class XADD:
         Returns:
             int: The resulting XADD node ID.
         """
-        # Get the root node
+        # Get the root node.
         node = self.get_exist_node(xadd)
 
-        # Handle leaf node cases: simply substitute leaf expression into 'var' in leaf_val
+        # Handle leaf node cases: simply substitute leaf expression into 'var' in leaf_val.
         if node.is_leaf():
             node = cast(XADDTNode, node)
             xadd_leaf_expr = node.expr
             expr = leaf_val.xreplace({var: xadd_leaf_expr})
             expr = core.expand(expr)
 
-            # Special treatment for oo, -oo
+            # Special treatment for oo, -oo.
             try:
-                # TODO: Need to update this...
                 args = expr.args
                 if len(args) > 0 and isinstance(expr.args[0], core.Number):
                     if args[0] == core.oo:
@@ -1300,12 +1335,12 @@ class XADD:
             node_id = self.get_leaf_node(expr, annotation=None)
             return node_id
 
-        # Internal nodes: get low and high branches and do recursion
+        # Internal nodes: get low and high branches and do recursion.
         low, high = node.low, node.high
         low = self.substitute_xadd_for_var_in_expr(leaf_val, var, low)
         high = self.substitute_xadd_for_var_in_expr(leaf_val, var, high)
 
-        # Get the node id for a (sub)XADD and return it
+        # Get the node id for a (sub)XADD and return it.
         node_id = self.get_internal_node(node.dec, low=low, high=high)
 
         return node_id
@@ -1317,14 +1352,18 @@ class XADD:
         return integrator._running_sum
 
     def get_repr(self, node_id: int) -> str:
-        # For printing out the representation
+        # For printing out the representation.
         node = self._id_to_node[node_id]
         return repr(node)
 
     def get_leaf_node_from_node(self, node: XADDTNode) -> int:
         """
-        :param node:            (Node) If Node object is passed.. also take annotation into consideration
-        :return:
+        Get the node ID of the leaf node with the same expression as the given node.
+
+        Args:
+            node:    (XADDTNode) XADD terminal node.
+        Returns:
+            int: The resulting XADD node ID.
         """
         expr, annotation = node.expr, node._annotation
         return self.get_leaf_node(expr, annotation)
@@ -1348,19 +1387,19 @@ class XADD:
             annotation (Optional[int], optional): The node ID of the annotation.
         
         Returns:
-            int: _description_
+            int: The resulting XADD node ID.
         """
         self._temp_term_node.set(expr, annotation)
         node_id = self._node_to_id.get(self._temp_term_node, None)
         if node_id is None:
-            # node not in cache, so create
+            # Node not in cache, so create.
             node_id = self._nodeCounter
             node = XADDTNode(expr, annotation, context=self)
             self._id_to_node[node_id] = node
             self._node_to_id[node] = node_id
             self._nodeCounter += 1
 
-            # add in all new variables
+            # Add in all new variables.
             vars_in_expr = expr.free_symbols.copy()
             diff_vars = vars_in_expr.difference(self._cont_var_set).difference(self._bool_var_set)
             for v in diff_vars:
@@ -1384,16 +1423,21 @@ class XADD:
             high_val: core.Basic
     ) -> int:
         """
-        Get decision node with relational expression having dec, whose low and high values are also given.
-        :param dec_expr:            (core.Rel)
-        :param low_val:             (float)
-        :param high_val:            (float)
-        :return:
+        Get decision node with relational expression having dec, 
+            whose low and high values are also given.
+        
+        Args:
+            dec_expr:   (DECISION_TYPE) decision expression.
+            low_val:    (core.Basic) low branch expression.
+            high_val:   (core.Basic) high branch expression.
+        
+        Returns:
+            int: The resulting XADD node ID.
         """
         dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
         low = self.get_leaf_node(low_val)
         high = self.get_leaf_node(high_val)
-        # Swap low and high branches if reversed
+        # Swap low and high branches if reversed.
         if is_reversed:
             high, low = low, high
         return self.get_internal_node(dec, low, high)
@@ -1403,22 +1447,25 @@ class XADD:
     ) -> Tuple[Union[Tuple[core.Basic, core.Basic], core.Basic], bool]:
         """
         Return canonical form of an expression.
-        It should always take either one of the two forms: expr.args[0] <= 0 or expr.args[0] >= 0.
+        It should always take the following form: expr.args[0] <= 0.
+        
         Args:
-            expr:
-
+            expr:  (core.Basic) SymEngine expression.
+        
         Returns:
-
+            Tuple[Union[Tuple[core.Basic, core.Basic], core.Basic], bool]: 
+                The canonical form of the given expression 
+                    and whether the expression is reversed.
         """
         is_reversed = False
 
-        # Handle tautology: simply return without doing anything
+        # Handle tautology: simply return without doing anything.
         if expr == core.true:
             return expr, is_reversed
         elif expr == core.false:
             return expr, is_reversed
 
-        # Handle boolean expressions
+        # Handle boolean expressions.
         if not isinstance(expr, core.Rel):
             if not expr.is_Boolean and expr.is_symbol:
                 logger.info(f"Variable {expr} will be treated as Boolean")
@@ -1428,12 +1475,12 @@ class XADD:
                 self.add_boolean_var(expr)
             else:
                 assert expr.is_Boolean and expr.is_symbol, (
-                    f'We only support a single Boolean variable as a decision variable,'
-                    f'but got {expr}.'
+                    f'We only support a single Boolean variable as a'
+                    f' decision variable, but got {expr}.'
                 )
             return expr, is_reversed
         
-        # Always make 'lhs - rhs <= 0' as canonical expression
+        # Always make 'lhs - rhs <= 0' as canonical expression.
         lhs, rhs, rel = expr.args[0], expr.args[1], REL_TYPE[type(expr)]
         lhs = (lhs - rhs).expand()
 
@@ -1452,34 +1499,35 @@ class XADD:
             )
             coeff_first_term = sorted_args[0]
             if isinstance(coeff_first_term, core.Number):
-                # TODO: the following does not guarantee to return the lowest degree term...
-                # But at least will be canonical?. Need to check.
+                # TODO: is this always canonical?. Need to check.
                 coeff_first_term = sorted_args[1]
 
             if isinstance(coeff_first_term, core.Mul):
                 arg1 = coeff_first_term.args[0]
                 if isinstance(arg1, core.Number):
                     lhs = (lhs / arg1).expand()
-                    # Divided by a negative number changes the direction of inequality
+                    # Divided by a negative number changes the direction of inequality.
                     if arg1 < 0 and rel in ('<=', '<', '>', '>='):
                         is_reversed = True if not is_reversed else False
 
             # If possible, use integer coefficients.
-            lhs = sum([(int(c) * t) if (int(c) == float(c)) else (c * t) for t, c in lhs.as_coefficients_dict().items()])
+            lhs = sum([(int(c) * t) if (int(c) == float(c))
+                       else (c * t)
+                       for t, c in lhs.as_coefficients_dict().items()])
         expr = RELATIONAL_OPERATOR[rel](lhs, 0)
         return expr, is_reversed
 
     def get_dec_expr_index(
             self, expr: core.Basic, create: bool, canon: bool = False, **kwargs
     ) -> Tuple[Union[core.BooleanAtom, int], bool]:
-        """Given a symbolic expression 'expr', return the index of the expression in XADD._id_to_expr.
+        """Given a symbolic expression 'expr', returns its index and `is_reversed` flag.
         
         Note that if a new random variable is included in the expression,
-        kwargs should have the necessary parameters to specify the random variable.
+            kwargs should have the necessary parameters to specify the random variable.
         
         For example, for a uniform random variable, we need
-            {'params': [lb, ub]} where lb and ub are the lower and upper bounds of the uniform 
-            distribution, respectively.
+            {'params': [lb, ub]} where lb and ub are the lower and upper bounds
+            of the uniform distribution, respectively.
         
         If this information was not provided, this method will result in an assertion error.
         
@@ -1490,7 +1538,7 @@ class XADD:
             canon (bool, optional): Deprecated... TODO: check whether this can safely removed.
 
         Returns:
-            Tuple[Union[core.BooleanAtom, int], bool]: _description_
+            Tuple[int, bool]: The index of the given expression and `is_reversed` flag.
         """
         is_reversed = False
         if not canon:
@@ -1501,21 +1549,21 @@ class XADD:
         if index is None:
             index = 0
 
-        # If found, and not create
+        # If found, and not create.
         if index != 0 or not create:
             return index, is_reversed
-        # If nothing's found, create one and store
+        # If nothing's found, create one and store.
         else:
             index = XADD._func_var_index(self, expr)
             self._expr_to_id[expr] = index
             self._id_to_expr[index] = expr
             
-            # Check whether the expression is at most linear in free variables
+            # Check whether the expression is at most linear in free variables.
             is_linear = check_expr_linear(expr)
             self._expr_to_linear_check[expr] = is_linear
             self._expr_id_to_linear_check[index] = is_linear
             
-            # Add in all new variables
+            # Add in all new variables.
             # (1) If a single symbol, it has to be Boolean.
             if isinstance(expr, VAR_TYPE):
                 assert not isinstance(expr, RandomVar), (
@@ -1536,35 +1584,38 @@ class XADD:
         return index, is_reversed
 
     def get_exist_node(self, node_id: int) -> Node:
+        """Returns the XADD node with the given ID."""
         node = self._id_to_node.get(node_id, None)
         if node is None:
             logger.info("Unexpected Missing node: " + node_id)
         return node
 
     def get_internal_node(self, dec_id: int, low: int, high: int) -> int:
-        """
+        """Returns the ID of the internal node.
 
-        :param dec_id:      (int) id of decision expression
-        :param low:         (int) id of low branch node
-        :param high:        (int) id of high branch node
-        :return:            (int) return id of node
+        Args:
+            dec_id (int): The ID of the decision expression.
+            low (int): The ID of the low branch.
+            high (int): The ID of the high branch.
+        Returns:
+            int: The ID of the internal node.
         """
         if dec_id < 0:
             high, low = low, high
             dec_id = -dec_id
 
-        # Check if low == high
+        # Check if low == high.
         if low == high:
             return low
 
-        # Handle tautological cases
+        # Handle tautological cases.
         dec_expr = self._id_to_expr.get(dec_id, None)
         if dec_expr == core.true:
             return high
         elif dec_expr == core.false:
             return low
 
-        # Retrieve XADDINode (create if it does not exist)
+        # Retrieve XADDINode (create if it does not exist).
         self._tempINode.set(dec_id, low, high)
         node_id = self._node_to_id.get(self._tempINode, None)
         if node_id is None:
@@ -1581,20 +1632,20 @@ class XADD:
             use_expectation: bool = False, 
             rng: np.random.Generator = None
     ) -> int:
-        """Samples all random variables existing in the given node and return the
-        ID of the reduced node with all random values instantiated 
+        """Samples all random variables existing in the given node.
 
         Args:
-            node_id (int): The XADD node
-            use_expectation (bool, optional): Whether to use the expected value instead of sampling
-            rng (np.random.Generator, optional): The random number generator to use
+            node_id (int): The node to reduce.
+            use_expectation (bool): Whether to use the expected value instead of sampling.
+                Defaults to False.
+            rng (np.random.Generator): The random number generator to use.
 
         Returns:
-            int: The ID of the reduce node after sampling
+            int: The ID of the reduce node after sampling.
         """
         if rng is None:
             rng = np.random.default_rng()
-        
+
         node = self.get_exist_node(node_id)
 
         if node.is_leaf():
@@ -1609,7 +1660,7 @@ class XADD:
             expr = expr.xreplace(samples)
             return self.get_leaf_node(expr, annotation=node._annotation)
         
-        # Handle an internal node
+        # Handle an internal node.
         node = cast(XADDINode, node)
         low = self.reduce_sample(node.low, use_expectation, rng)
         high = self.reduce_sample(node.high, use_expectation, rng)
@@ -1625,23 +1676,25 @@ class XADD:
             dec, is_reversed = self.get_dec_expr_index(dec_expr, create=True)
             if is_reversed:
                 low, high = high, low
-        
+
         return self.get_internal_node(dec, low, high)
 
     def reduce_process_xadd_leaf(
             self, 
             node_id: int, 
-            leaf_op,        # XADDLeafOperation
-            decisions: list, 
-            decision_values: list
+            leaf_op,    # XADDLeafOperation
+            decisions: List[DECISION_TYPE], 
+            decision_values: List[bool],
     ) -> int:
-        """
+        """Recursively process the XADD node with the given leaf operation.
 
-        :param node_id:
-        :param leaf_op:
-        :param decisions:
-        :param decision_values:
-        :return:
+        Args:
+            node_id (int): The node to process.
+            leaf_op (XADDLeafOperation): The leaf operation to apply.
+            decisions: (List[DECISION_TYPE]) List of decisions.
+            decision_values: (List[bool]) List of decision values.
+        Returns:
+            int: The resulting XADD node ID.
         """
         node = self.get_exist_node(node_id)
         if node.is_leaf():
@@ -1650,12 +1703,12 @@ class XADD:
         # Internal node
         dec_expr = self._id_to_expr.get(node.dec)
 
-        # Recurse the False branch
+        # Recurse the False branch.
         decisions.append(dec_expr)
         decision_values.append(False)
         low = self.reduce_process_xadd_leaf(node.low, leaf_op, decisions, decision_values)
 
-        # Recurse the True branch
+        # Recurse the True branch.
         decision_values[-1] = True
         high = self.reduce_process_xadd_leaf(node.high, leaf_op, decisions, decision_values)
 
@@ -1666,34 +1719,37 @@ class XADD:
         if leaf_op._require_canonical:
             ret = self.make_canonical(ret)
 
-        # Put return value in cache and return  # TODO: this does not distinguish different leaf operations
-        self._reduce_leafop_cache[node_id] = ret
+        # # Put return value in cache and return.
+        # Different leaf_op has different properties... skipping now.
+        # self._reduce_leafop_cache[(node_id, leaf_op.__class__.__name__)] = ret
         return ret
     
     """
-    Verifying feasibility and redundancy of all paths in the XADD
+    Verifying feasibility and redundancy of all paths in the XADD.
     """
     def reduce_lp(self, node_id: int) -> int:
-        """
-        Consistency and redundancy checking
-        :param node_id:     (int) Node id
-        :return:
+        """Consistency and redundancy checking.
+        
+        Args:
+            node_id (int): The node to check.
+        Returns:
+            int: The resulting XADD node ID.
         """
         return self.RLPContext.reduce_lp(node_id)
 
     """
-    Related to MILP compilation of XADD
+    Related to MILP compilation of XADD.
     """
     def set_objective(self, obj: Union[int, dict]):
         self._obj = obj
         if isinstance(obj, dict):
             self._additive_obj = True
-    
+
     def get_objective(self):
         return self._obj
-    
+
     """
-    Cache maintenance
+    Cache maintenance.
     """
     def clear_special_nodes(self):
         self._special_nodes.clear()
@@ -1754,16 +1810,27 @@ class XADD:
             self._node_to_id_new[node] = node_id
 
     """
-    Export and import XADDs
+    Export and import XADDs.
     """
     def export_xadd(
-            self, node_id: int, fname: str, append: bool = False, include_node_info: bool = False
+            self,
+            node_id: int,
+            fname: str,
+            append: bool = False,
+            include_node_info: bool = False
     ):
-        """
-        Export the XADD node to a file.
+        """Export the XADD node to a file.
         If append is True, then open the file in the append mode.
+
+        Args:
+            node_id (int): The ID of the node to be exported.
+            fname (str): The file name to export the XADD node.
+            append (bool, optional): Whether to append to the file.
+                Defaults to False.
+            include_node_info (bool, optional): Whether to include node
+                information. Defaults to False.
         """
-        # Firstly, turn off printing node info
+        # Firstly, turn off printing node info.
         node: Node = self._id_to_node.get(node_id, None)
         if node is None:
             raise KeyError(f'There is no node with id {node_id}')
@@ -1778,27 +1845,37 @@ class XADD:
             with open(fname, 'w+') as f:
                 f.write(str(node))
 
-        # Turn the printing mode back on
+        # Turn the printing mode back on.
         node.turn_on_print_node_info()
 
     def import_xadd(
             self, 
             fname: Optional[str] = None,
             xadd_str: Optional[str] = None,
-            locals: Optional[dict] = None,
-            to_canonical: bool = True
+            to_canonical: bool = True,
     ) -> int:
+        """Import the XADD node from a file or a string.
+
+        Args:
+            fname (Optional[str], optional): The file name
+                to import the XADD node. Defaults to None.
+            xadd_str (Optional[str], optional): The string
+                to import the XADD node. Defaults to None.
+            to_canonical (bool, optional): Whether to make the XADD canonical.
+        
+        Returns:
+            int: The ID of the imported XADD node.
         """
-        Import the XADD node defined in an input file or in a string.
-        """
-        assert (fname is not None and xadd_str is None) or (fname is None and xadd_str is not None),\
-            "Specify either a file name or a string, not both"
+        assert (
+            (fname is not None and xadd_str is None) or 
+            (fname is None and xadd_str is not None)
+        ), "Specify either a file name or a string, not both."
 
         if fname is not None:
             with open(fname, 'r') as f:
                 xadd_str = f.read().replace('\n', '')
-        
-        # Note: when it is just a leaf expression: not supported
+
+        # Note: when it is just a leaf expression: not supported.
         if xadd_str.rfind('(') == 0 and xadd_str.rfind('[') == 2:
             xadd_as_list = [core.sympify(xadd_str.strip('( [] )'))]
         else:
@@ -1807,10 +1884,10 @@ class XADD:
         return node_id
 
     """
-    Graph visualization
+    Graph visualization.
     """
     def get_graph(self, node_id: int, name: str = '') -> Graph:
-        """Creates a graph view of a given node"""
+        """Creates a graph view of a given node."""
         try:
             graph = Graph(
                 name=name, 
@@ -1822,11 +1899,12 @@ class XADD:
         except AttributeError:
             warnings.warn("You need to install 'pygraphviz' to construct graph visualization")
             raise Exception
-        
+
     def save_graph(self, node_id: int, file_name: str):
+        """Saves the graph visualization of a given node."""
         graph = self.get_graph(node_id)
         graph.configure()
-        
+
         f_dir = Path('./tmp')
         f_dir.mkdir(exist_ok=True, parents=True)
         if file_name.endswith('png'):
@@ -1834,7 +1912,7 @@ class XADD:
         elif not file_name.endswith('pdf'):
             file_name = file_name + '.pdf'
         f_path = f_dir / file_name
-        
+
         graph.draw(f_path, prog='dot')
 
 
@@ -2063,27 +2141,26 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
         return ub
 
     def process_xadd_leaf(
-            self, decisions: list, decision_values: list, leaf_val: core.Basic
-    ):
-        """
-
-        :param decisions:
-        :param decision_values:
-        :param leaf_val:        (core.Basic) leaf expression
-        :return:
-        """
-        # Check if below computation is unnecessary
-        # min(oo, oo) = oo; max(oo, oo) = oo; min(-oo, -oo) = -oo; max(-oo, -oo) = -oo;
-        # But, argmax and argmin are ambiguous in these cases, and so we simply annotate them with NaN
+            self,
+            decisions: List[DECISION_TYPE],
+            decision_values: List[bool],
+            leaf_val: core.Basic
+    ) -> int:
+        # Check if below computation is unnecessary.
+        # min(oo, oo) = oo; max(oo, oo) = oo;
+        # min(-oo, -oo) = -oo; max(-oo, -oo) = -oo;
+        # But, argmax and argmin are ambiguous in these cases,
+        # and so we simply annotate them with NaN.
         if leaf_val == oo or leaf_val == -oo:
-            min_max_eval = self._context.get_leaf_node(leaf_val, annotation=self._context.NAN)
+            min_max_eval = self._context.get_leaf_node(
+                leaf_val, annotation=self._context.NAN)
 
-            # Compare with the running result
+            # Compare with the running result.
             if self._running_result == -1:
                 self._running_result = min_max_eval
             return self._context.get_leaf_node(leaf_val)
 
-        # Bound management
+        # Bound management.
         lower_bound = []
         upper_bound = []
         lower_bound.append(core.S(self._lower_bound))
@@ -2092,9 +2169,9 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
         # Independent decisions (incorporated later): [(dec_expr, bool)]
         target_var_indep_decisions = []
 
-        # Get lower and upper bounds over the variable
+        # Get lower and upper bounds over the variable.
         for dec_expr, is_true in zip(decisions, decision_values):
-            # Check boolean decisions or if self._var in dec_expr
+            # Check boolean decisions or if self._var in dec_expr.
             if (dec_expr in self._context._bool_var_set) or (self._var not in dec_expr.atoms()):
                 target_var_indep_decisions.append((dec_expr, is_true))
                 continue
@@ -2103,29 +2180,33 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
             lt = (lt and is_true) or (not lt and not is_true)
             expr = lhs <= rhs if lt else lhs >= rhs
 
-            # Get bounds over 'var'
+            # Get bounds over 'var'.
             bound_expr, upper = xaddpy.utils.util.get_bound(self._var, expr)
             if upper:
                 upper_bound.append(bound_expr)
             else:
                 lower_bound.append(bound_expr)
 
-        # lower bound over 'var' is the maximum among lower bounds
+        # lower bound over 'var' is the maximum among lower bounds.
         xadd_lower_bound = -1
         for e in lower_bound:
-            xadd_lower_bound = self._context.get_leaf_node(e) if xadd_lower_bound == -1 \
-                                else self._context.apply(xadd_lower_bound,
-                                                         self._context.get_leaf_node(e),
-                                                         op='max')
+            xadd_lower_bound = self._context.get_leaf_node(e)
+                                if xadd_lower_bound == -1
+                                else self._context.apply(
+                                    xadd_lower_bound,
+                                    self._context.get_leaf_node(e),
+                                    op='max')
 
         xadd_upper_bound = -1
         for e in upper_bound:
-            xadd_upper_bound = self._context.get_leaf_node(e) if xadd_upper_bound == -1 \
-                                else self._context.apply(xadd_upper_bound,
-                                                         self._context.get_leaf_node(e),
-                                                         op='min')
+            xadd_upper_bound = self._context.get_leaf_node(e)
+                                if xadd_upper_bound == -1
+                                else self._context.apply(
+                                    xadd_upper_bound,
+                                    self._context.get_leaf_node(e),
+                                    op='min')
 
-        # Reduce lower and upper bound xadds for potential computational gains
+        # Reduce lower and upper bound xadds for potential computational gains.
         xadd_lower_bound = self._context.reduce_lp(xadd_lower_bound)
         xadd_upper_bound = self._context.reduce_lp(xadd_upper_bound)
 
@@ -2138,15 +2219,13 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                     continue
                 target_var_indep_decisions.append((comp, True))
 
-        # Substitute lower and upper bounds into leaf node
-        eval_lower = self._context.substitute_xadd_for_var_in_expr(leaf_val,
-                                                                   var=self._var,
-                                                                   xadd=xadd_lower_bound)
-        eval_upper = self._context.substitute_xadd_for_var_in_expr(leaf_val,
-                                                                   var=self._var,
-                                                                   xadd=xadd_upper_bound)
+        # Substitute lower and upper bounds into leaf node.
+        eval_lower = self._context.substitute_xadd_for_var_in_expr(
+            leaf_val, var=self._var, xadd=xadd_lower_bound)
+        eval_upper = self._context.substitute_xadd_for_var_in_expr(
+            leaf_val, var=self._var, xadd=xadd_upper_bound)
 
-        # Take casemin / casemax of eval_lower and eval_upper
+        # Take casemin / casemax of eval_lower and eval_upper.
         """
         If `leaf_val` is bilinear, then we know that a leaf value of `eval_upper - eval_lower` will factorize as 
             (ub_vj - lb_vj) * (d_vj + \sum_i x_i Q_ij) and that (ub_vj - lb_vj) >= 0
@@ -2176,50 +2255,62 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                 min_max_eval = eval_lower
             else:
                 dec, is_reversed = self._context.get_dec_expr_index(dec_expr, create=True)
-                ind_true = self._context.get_internal_node(dec,
-                                                           self._context.ZERO,
-                                                           self._context.ONE)      # Note: need to use ZERO_ig for annotating purpose... 
-                ind_false = self._context.get_internal_node(dec,                   # but this is skipped in this branch
-                                                            self._context.ONE,
-                                                            self._context.ZERO) 
-                upper_half = self._context.apply(ind_true if not is_reversed else ind_false,
-                                                 eval_upper,
-                                                 'prod')
-                lower_half = self._context.apply(ind_false if not is_reversed else ind_true,
-                                                 eval_lower,
-                                                 'prod')
-                min_max_eval = self._context.apply(upper_half, lower_half, 'add',
-                                                   annotation=(xadd_upper_bound, xadd_lower_bound) 
-                                                        if self._annotate else None)
+                ind_true = self._context.get_internal_node(
+                    dec, self._context.ZERO, self._context.ONE)      # Note: need to use ZERO_ig for annotating purpose... 
+                ind_false = self._context.get_internal_node(         # but this is skipped in this branch.
+                    dec, self._context.ONE, self._context.ZERO)
+                upper_half = self._context.apply(
+                    ind_true if not is_reversed else ind_false,
+                    eval_upper,
+                    'prod')
+                lower_half = self._context.apply(
+                    ind_false if not is_reversed else ind_true,
+                    eval_lower,
+                    'prod')
+                min_max_eval = self._context.apply(
+                    upper_half, lower_half, 'add',
+                    annotation=(xadd_upper_bound, xadd_lower_bound)
+                        if self._annotate else None
+                )
                 min_max_eval = self._context.make_canonical(min_max_eval)
         else:
-            # Note: always 1st argument should be upper bound, while 2nd argument is lower bound
-            min_max_eval = self._context.apply(eval_upper, eval_lower, 'max' if self._is_max else 'min',
-                                               annotation=(xadd_upper_bound, xadd_lower_bound) if self._annotate else None)
+            # Note: always 1st argument should be upper bound,
+            # while 2nd argument is lower bound.
+            min_max_eval = self._context.apply(
+                eval_upper,
+                eval_lower,
+                'max' if self._is_max else 'min',
+                annotation=(xadd_upper_bound, xadd_lower_bound)
+                    if self._annotate else None
+            )
 
-        # Reduce LP
+        # Reduce LP.
         min_max_eval = self._context.reduce_lp(min_max_eval)
         if self._context._args.get("leaf_minmax_no_prune", False):
             self._context._prune_equality = False
 
-        # Incorporate independent decisions
+        # Incorporate independent decisions.
         for d, b in target_var_indep_decisions:
             high_val = oo if (b and self._is_max) or (not b and not self._is_max) \
                 else -oo
             low_val = -oo if (b and self._is_max) or (not b and not self._is_max) \
                 else oo
             indep_constraint = self._context.get_dec_node(d, low_val, high_val)
-            # Note 'min' and 'max' are swapped below: ensuring non-valid paths result in infinite penalty
-            min_max_eval = self._context.apply(indep_constraint, min_max_eval, 'min' if self._is_max else 'max')
+            # Note 'min' and 'max' are swapped below:
+            # ensuring non-valid paths result in infinite penalty.
+            min_max_eval = self._context.apply(
+                indep_constraint,
+                min_max_eval,
+                'min' if self._is_max else 'max')
             min_max_eval = self._context.reduce_lp(min_max_eval)
 
-        # Reduce
+        # Reduce.
         if self._context._args.get("leaf_minmax_no_prune", False):
             self._context._prune_equality = True
             min_max_eval = self._context.reduce_lp(min_max_eval)
 
         """
-        Min(max)imize out remaining variables
+        Min(max)imize out remaining variables.
         """
         if len(self._var_lst) > 1:
             min_or_max = XADDLeafMultivariateMinOrMax(
@@ -2230,18 +2321,22 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                 annotate=self._annotate,
             )
             decisions, decision_values = [], []
-            _ = self._context.reduce_process_xadd_leaf(min_max_eval,
-                                                       min_or_max,
-                                                       decisions,
-                                                       decision_values)
+            _ = self._context.reduce_process_xadd_leaf(
+                min_max_eval,
+                min_or_max,
+                decisions,
+                decision_values)
             min_max_eval = min_or_max._running_result
 
         if self._running_result == -1:
             self._running_result = min_max_eval
         else:
-            self._running_result = self._context.apply(self._running_result, min_max_eval, 'max' if self._is_max else 'min')
+            self._running_result = self._context.apply(
+                self._running_result,
+                min_max_eval,
+                'max' if self._is_max else 'min')
             self._running_result = self._context.reduce_lp(self._running_result)
-        
+
         return self._context.get_leaf_node(leaf_val)
 
 
@@ -2278,17 +2373,17 @@ class XADDLeafMinOrMax(XADDLeafOperation):
             self._lower_bound: Union[int, float, core.Number] = -oo
             self._upper_bound: Union[int, float, core.Number] = oo
 
-    def process_xadd_leaf(self, decisions: list, decision_values: list, leaf_val: core.Basic):
-        """
-
-        :param decisions:
-        :param decision_values:
-        :param leaf_val:        (core.Basic) leaf expression
-        :return:
-        """
-        # Check if below computation is unnecessary
-        # min(oo, oo) = oo; max(oo, oo) = oo; min(-oo, -oo) = -oo; max(-oo, -oo) = -oo;
-        # But, argmax and argmin are ambiguous in these cases, and so we simply annotate them with NaN
+    def process_xadd_leaf(
+            self,
+            decisions: List[DECISION_TYPE],
+            decision_values: List[bool],
+            leaf_val: core.Basic
+    ) -> int:
+        # Check if below computation is unnecessary.
+        # min(oo, oo) = oo; max(oo, oo) = oo;
+        # min(-oo, -oo) = -oo; max(-oo, -oo) = -oo;
+        # But, argmax and argmin are ambiguous in these cases,
+        # and so we simply annotate them with NaN.
         if leaf_val == oo or leaf_val == -oo:
             min_max_eval = self._context.get_leaf_node(leaf_val, annotation=self._context.NAN)
 
@@ -2297,7 +2392,7 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                 self._running_result = min_max_eval
             return self._context.get_leaf_node(leaf_val)
 
-        # Bound management
+        # Bound management.
         lower_bound = []
         upper_bound = []
         lower_bound.append(core.S(self._lower_bound))
@@ -2306,9 +2401,9 @@ class XADDLeafMinOrMax(XADDLeafOperation):
         # Independent decisions (incorporated later): [(dec_expr, bool)]
         target_var_indep_decisions = []
 
-        # Get lower and upper bounds over the variable
+        # Get lower and upper bounds over the variable.
         for dec_expr, is_true in zip(decisions, decision_values):
-            # Check boolean decisions or if self._var in dec_expr
+            # Check boolean decisions or if self._var in dec_expr.
             if (dec_expr in self._context._bool_var_set) or (self._var not in dec_expr.atoms()):
                 target_var_indep_decisions.append((dec_expr, is_true))
                 continue
@@ -2318,29 +2413,37 @@ class XADDLeafMinOrMax(XADDLeafOperation):
             lt = (lt and is_true) or (not lt and not is_true)
             expr = lhs <= rhs if lt else lhs >= rhs
 
-            # Get bounds over 'var'
+            # Get bounds over 'var'.
             bound_expr, upper = xaddpy.utils.util.get_bound(self._var, expr)
             if upper:
                 upper_bound.append(bound_expr)
             else:
                 lower_bound.append(bound_expr)
 
-        # lower bound over 'var' is the maximum among lower bounds
+        # lower bound over 'var' is the maximum among lower bounds.
         xadd_lower_bound = -1
         for e in lower_bound:
-            xadd_lower_bound = self._context.get_leaf_node(e) if xadd_lower_bound == -1 \
-                               else self._context.apply(xadd_lower_bound, self._context.get_leaf_node(e), op='max')
+            xadd_lower_bound = self._context.get_leaf_node(e)
+                                if xadd_lower_bound == -1
+                                else self._context.apply(
+                                    xadd_lower_bound,
+                                    self._context.get_leaf_node(e),
+                                    op='max')
 
         xadd_upper_bound = -1
         for e in upper_bound:
-            xadd_upper_bound = self._context.get_leaf_node(e) if xadd_upper_bound == -1 \
-                else self._context.apply(xadd_upper_bound, self._context.get_leaf_node(e), op='min')
+            xadd_upper_bound = self._context.get_leaf_node(e)
+                                if xadd_upper_bound == -1
+                                else self._context.apply(
+                                    xadd_upper_bound,
+                                    self._context.get_leaf_node(e),
+                                    op='min')
 
-        # Reduce lower and upper bound xadds for potential computational gains
+        # Reduce lower and upper bound xadds for potential computational gains.
         xadd_lower_bound = self._context.reduce_lp(xadd_lower_bound)
         xadd_upper_bound = self._context.reduce_lp(xadd_upper_bound)
 
-        # Ensure lower bounds are smaller than upper bounds
+        # Ensure lower bounds are smaller than upper bounds.
         for e1 in lower_bound:
             for e2 in upper_bound:
                 comp = core.LessThan((e1 - e2).expand(), 0)     # lb - ub <= 0
@@ -2349,12 +2452,14 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                     continue
                 target_var_indep_decisions.append((comp, True))
 
-        # Substitute lower and upper bounds into leaf node
-        eval_lower = self._context.substitute_xadd_for_var_in_expr(leaf_val, var=self._var, xadd=xadd_lower_bound)
-        eval_upper = self._context.substitute_xadd_for_var_in_expr(leaf_val, var=self._var, xadd=xadd_upper_bound)
+        # Substitute lower and upper bounds into leaf node.
+        eval_lower = self._context.substitute_xadd_for_var_in_expr(
+            leaf_val, var=self._var, xadd=xadd_lower_bound)
+        eval_upper = self._context.substitute_xadd_for_var_in_expr(
+            leaf_val, var=self._var, xadd=xadd_upper_bound)
         annotation = (xadd_upper_bound, xadd_lower_bound) if self.annotate else None
 
-        # Take casemin / casemax of eval_lower and eval_upper
+        # Take casemin / casemax of eval_lower and eval_upper.
         """
         If `leaf_val` is bilinear, then we know that a leaf value of `eval_upper - eval_lower` will factorize as 
             (ub_vj - lb_vj) * (d_vj + \sum_i x_i Q_ij) and that (ub_vj - lb_vj) >= 0
@@ -2375,7 +2480,7 @@ class XADDLeafMinOrMax(XADDLeafOperation):
         is_bilinear = xaddpy.utils.util.is_bilinear(leaf_val)
         expr = 0
         if is_bilinear:
-            # Get the expression multiplied to `self._var`
+            # Get the expression multiplied to `self._var`.
             expr = xaddpy.utils.util.get_multiplied_expr(leaf_val, self._var)
         if is_bilinear and expr != 0:
             dec_expr = expr <= 0
@@ -2385,46 +2490,68 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                 min_max_eval = eval_lower
             else:
                 dec, is_reversed = self._context.get_dec_expr_index(dec_expr, create=True)
-                ind_true = self._context.get_internal_node(dec, self._context.ZERO, self._context.ONE)      # Note: need to use ZERO_ig for annotating purpose... 
-                ind_false = self._context.get_internal_node(dec, self._context.ONE, self._context.ZERO)     # but this is skipped in this branch
-                upper_half = self._context.apply(ind_true if not is_reversed else ind_false, eval_upper, 'prod')
-                lower_half = self._context.apply(ind_false if not is_reversed else ind_true, eval_lower, 'prod')
-                min_max_eval = self._context.apply(upper_half, lower_half, 'add',
-                                                   annotation=annotation)
+                ind_true = self._context.get_internal_node(
+                    dec, self._context.ZERO, self._context.ONE)      # Note: need to use ZERO_ig for annotating purpose... 
+                ind_false = self._context.get_internal_node(         # but this is skipped in this branch.
+                    dec, self._context.ONE, self._context.ZERO)
+                upper_half = self._context.apply(
+                    ind_true if not is_reversed else ind_false,
+                    eval_upper,
+                    'prod')
+                lower_half = self._context.apply(
+                    ind_false if not is_reversed else ind_true,
+                    eval_lower,
+                    'prod')
+                min_max_eval = self._context.apply(
+                    upper_half,
+                    lower_half,
+                    'add',
+                    annotation=annotation)
                 min_max_eval = self._context.make_canonical(min_max_eval)
         else:
-            # Note: always 1st argument should be upper bound, while 2nd argument is lower bound
-            min_max_eval = self._context.apply(eval_upper, eval_lower, 'max' if self._is_max else 'min',
-                                               annotation=annotation)
+            # Note: always 1st argument should be upper bound,
+            # while 2nd argument is lower bound.
+            min_max_eval = self._context.apply(
+                eval_upper,
+                eval_lower,
+                'max' if self._is_max else 'min',
+                annotation=annotation)
 
-        # Reduce LP
+        # Reduce LP.
         min_max_eval = self._context.reduce_lp(min_max_eval)
         if self._context._args.get("leaf_minmax_no_prune", False):
             self._context._prune_equality = False
 
-        # Incorporate independent decisions
+        # Incorporate independent decisions.
         for d, b in target_var_indep_decisions:
             high_val = oo if (b and self._is_max) or (not b and not self._is_max) \
                 else -oo
             low_val = -oo if (b and self._is_max) or (not b and not self._is_max) \
                 else oo
             indep_constraint = self._context.get_dec_node(d, low_val, high_val)
-            # Note 'min' and 'max' are swapped below: ensuring non-valid paths result in infinite penalty
-            min_max_eval = self._context.apply(indep_constraint, min_max_eval, 'min' if self._is_max else 'max')
+            # Note 'min' and 'max' are swapped below:
+            # ensuring non-valid paths result in infinite penalty.
+            min_max_eval = self._context.apply(
+                indep_constraint,
+                min_max_eval,
+                'min' if self._is_max else 'max')
             min_max_eval = self._context.reduce_lp(min_max_eval)
 
-        # Reduce
+        # Reduce.
         if self._context._args.get("leaf_minmax_no_prune", False):
             self._context._prune_equality = True
             min_max_eval = self._context.reduce_lp(min_max_eval)
 
-        # Compare with the running result
+        # Compare with the running result.
         if self._running_result == -1:
             self._running_result = min_max_eval
         else:
-            self._running_result = self._context.apply(self._running_result, min_max_eval, 'max' if self._is_max else 'min')
+            self._running_result = self._context.apply(
+                self._running_result,
+                min_max_eval,
+                'max' if self._is_max else 'min')
 
-        # Reduce running result
+        # Reduce running result.
         self._running_result = self._context.reduce_lp(self._running_result)
 
         return self._context.get_leaf_node(leaf_val)

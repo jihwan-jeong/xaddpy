@@ -167,7 +167,6 @@ class XADD(_XADD):
         """
         Read in XADDs corresponding to argmin solutions.
         """
-        ns = {}
         xadd_str = ''
         dec_var = None
 
@@ -189,14 +188,12 @@ class XADD(_XADD):
                     dec_vars = list(sorted(dec_vars,
                                            key=lambda x: (float(str(x).split("_")[0][1:]), float(str(x).split("_")[1]))
                                            if len(str(x).split("_")) > 1 else float(str(x)[1:])))
-                    ns.update({str(v): v for v in dec_vars})
-                    self.update_name_space(ns)
                     self._min_var_set.update(dec_vars)
                     dim_dec_vars = len(self._min_var_set)
 
                 elif i == 2:
                     assert line_split[0].lower() == 'bounds', "Bound information should be provided"
-                    bound_dict = {ns[str(v)]: tuple(map(int, line_split[i+1].strip()[1:-1].split(','))) for i, v in enumerate(dec_vars)}
+                    bound_dict = {v: tuple(map(int, line_split[i+1].strip()[1:-1].split(','))) for i, v in enumerate(dec_vars)}
                     self._var_to_bound.update(bound_dict)
 
                 elif i == 3 and line_split[0].lower() == 'feature dimension':
@@ -211,15 +208,15 @@ class XADD(_XADD):
 
                 elif len(line_split) > 1:
                     if len(xadd_str) > 0 and dec_var is not None:
-                        self._var_to_anno[dec_var] = self.import_xadd(xadd_str=xadd_str, locals=ns)
+                        self._var_to_anno[dec_var] = self.import_xadd(xadd_str=xadd_str)
                         xadd_str = ''
                     xadd_str = line_split[1].strip()
-                    dec_var = ns[line_split[0]]
+                    dec_var = core.Symbol(line_split[0])
 
                 elif len(line.strip()) != 0:
                     xadd_str += line
             if len(xadd_str) > 0 and dec_var is not None:
-                self._var_to_anno[dec_var] = self.import_xadd(xadd_str=xadd_str, locals=ns)
+                self._var_to_anno[dec_var] = self.import_xadd(xadd_str=xadd_str)
         # Handle equality constraints if exist by looking at the configuration json file
         try:
             with open(self._config_json_fname, "r") as json_file:
@@ -227,9 +224,8 @@ class XADD(_XADD):
         except:
             raise FileNotFoundError(f"Failed to open {self._config_json_fname}")
 
-        eq_constr_dict, dec_vars = compute_rref_filter_eq_constr(prob_instance['eq-constr'],
-                                                                 dec_vars,
-                                                                 locals=ns)
+        eq_constr_dict, dec_vars = compute_rref_filter_eq_constr(
+            prob_instance['eq-constr'], dec_vars)
         dec_vars = [v for v in dec_vars if v not in eq_constr_dict]
 
         return dec_vars, eq_constr_dict
