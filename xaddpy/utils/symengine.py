@@ -16,6 +16,7 @@ class BaseVar(metaclass=abc.ABCMeta):
             f"Expected a SymEngine Symbol, got {type(var)}."
         )
         self._var = var
+        self._is_Boolean = False
 
     @property
     def var(self):
@@ -28,6 +29,14 @@ class BaseVar(metaclass=abc.ABCMeta):
     @property
     def is_symbol(self):
         return True
+
+    @property
+    def is_Boolean(self):
+        return self._is_Boolean
+
+    @is_Boolean.setter
+    def is_Boolean(self, value: bool):
+        self._is_Boolean = value
 
     def __getattr__(self, attr):
         return getattr(self._var, attr)
@@ -67,6 +76,11 @@ class BooleanVar(BaseVar):
 
 class RandomVar(BaseVar):
     """A wrapper for a symbolic random variable."""
+
+    def __init__(self, var: sy.Symbol):
+        super().__init__(var)
+        if str(var).startswith('Bernoulli'):
+            self.is_Boolean = True
 
     @property
     def is_Random(self):

@@ -14,11 +14,8 @@ default_check_redundancy = True
 
 
 class ReduceLPContext:
+    """Context for reduce_lp method from XADD."""
     def __init__(self, context, **kwargs):
-        """
-
-        :param xadd:
-        """
         self.LPContext = context
         self.set_to_implied_set: Dict[FrozenSet[int], Set[int]] = {}
         self.set_to_nonimplied_set: Dict[FrozenSet[int], Set[int]] = {}
@@ -49,12 +46,8 @@ class ReduceLPContext:
         
 
 class LocalReduceLP:
+    """Actual workhorse for reduce_lp method from XADD."""
     def __init__(self, context, reduce_lp_context: ReduceLPContext, **kwargs):
-        """
-        :param xadd:            (XADD)
-        :param reduce_lp_context: (ReduceLPContext)
-        """
-        # super().__init__(localRoot, xadd)
         self._context = context
         self._expr_to_linear_check = self._context._expr_to_linear_check
         self._expr_id_to_linear_check = self._context._expr_id_to_linear_check
@@ -66,18 +59,24 @@ class LocalReduceLP:
         self.lp._lhs_expr_to_pulp.clear()
         self.lp._sym_to_pulp.clear()
 
-    def reduce_lp_v2(self, node_id: int, test_dec: set, redundancy: bool) -> int:
-        """Performs reduce_lp method on the given node and returns the (potentially) reduced node ID
+    def reduce_lp_v2(
+            self,
+            node_id: int,
+            test_dec: Set[int],
+            redundancy: bool) -> int:
+        """Performs reduce_lp on the given node and returns the reduced node ID.
 
         Args:
             node_id (int): The ID of the node to which 'reduce_lp' is applied.
-            test_dec (set): The set con
-            redundancy (bool): _description_
+            test_dec (set): The set containing IDs of decisions.
+            redundancy (bool): Check for redundancy.
 
         Returns:
             int: Reduced XADD node ID.
         """
-        avail_mem = psutil.virtual_memory().available * 100 / psutil.virtual_memory().total
+        avail_mem = (
+            psutil.virtual_memory().available * 100 / psutil.virtual_memory().total
+        )
         if avail_mem < 10:
             logger.info('freeing up cache of reduce_lp')
             self.reduce_lp_context.flush_caches()
@@ -91,11 +90,8 @@ class LocalReduceLP:
         node = cast(XADDINode, node)
         dec_id = node.dec
 
-        # Skip non-linear expressions (any higher order terms including bilinear)
-        # or Boolean decisions.
-        if not self._expr_id_to_linear_check[dec_id] or (
-            isinstance(self._context._id_to_expr[dec_id], BooleanVar)
-        ):
+        # Skip non-linear expressions (any higher order terms including bilinear).
+        if not self._expr_id_to_linear_check[dec_id]:
             low = self.reduce_lp_v2(node.low, test_dec, redundancy)
             high = self.reduce_lp_v2(node.high, test_dec, redundancy)
             return self.get_internal_node(dec_id, low, high)
@@ -150,8 +146,7 @@ class LocalReduceLP:
         return node_id
 
     def is_test_implied(self, test_dec: Set[int], dec: int) -> bool:
-        """Checks whether the decision associated with 'dec' is implied by the 
-        decisions included in 'test_dec'
+        """Checks whether 'dec' is implied by 'test_dec'.
 
         Args:
             test_dec (Set[int]): The set of decisions.
@@ -171,7 +166,9 @@ class LocalReduceLP:
 
         if -dec in test_dec:
             logger.warning(f"Checking if decision implies its negation! - {test_dec}")
-        test_dec.add(-dec)  # If adding the negation of `dec` to `test_dec` makes it infeasible, then `test_dec` implies `dec`
+        # If adding the negation of `dec` to `test_dec` makes it infeasible,
+        # then `test_dec` implies `dec`
+        test_dec.add(-dec)
         implied = self.is_infeasible(test_dec)
         test_dec.remove(-dec)
         if implied:
@@ -360,7 +357,7 @@ class LP:
                 self.model.addConstr(lhs_pulp <= 0, name=f'dec({dec})')
 
         # Handle Boolean decisions
-        elif isinstance(dec_expr, BooleanVar):
+        elif dec_expr.is_Boolean:
             bool_pulp = self.convert_expr(dec_expr, binary=True)
             if is_true:
                 self.model.addConstr(bool_pulp == 1, name=f'dec({dec})')

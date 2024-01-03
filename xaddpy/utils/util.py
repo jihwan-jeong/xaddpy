@@ -243,8 +243,8 @@ def get_date_time():
     return datetime.now().strftime("%m-%d-%Y_%H-%M-%S-%f")
 
 
-def check_sym_boolean(expr: core.Basic):
-    return isinstance(expr, core.BooleanAtom) or expr.is_Boolean
+def check_sym_boolean(expr: core.Basic) -> bool:
+    return isinstance(expr, core.BooleanAtom) or expr.is_Boolean or str(expr).startswith('Bernoulli')
 
 
 def sample_rvs(

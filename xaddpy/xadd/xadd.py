@@ -56,7 +56,11 @@ class XADD:
 
     _func_var_index = default_ordering
 
-    def __init__(self, args: dict = {}):
+    def __init__(
+            self,
+            args: dict = {},
+            perform_reduce_lp: bool = True,
+    ):
         # XADD variable maintenance
         self._cvar_to_id: Dict[core.Symbol, int] = {}
         self._id_to_cvar: Dict[int, core.Symbol] = {}
@@ -113,8 +117,9 @@ class XADD:
         self._factor_cache = {}
 
         # Reduce LP
+        self.perform_reduce_lp = perform_reduce_lp
         self.RLPContext = ReduceLPContext(self, **args)
-        
+
         # Node maintenance
         self._nodeCounter = 0
 
@@ -170,7 +175,11 @@ class XADD:
             self._name_space[str(var)] = var
 
     def add_boolean_var(self, var: Union[core.Symbol, BooleanVar]):
-        if not isinstance(var, BooleanVar):
+        if not (
+            isinstance(var, BooleanVar) or (
+                isinstance(var, RandomVar) and str(var).startswith('Bernoulli')
+            )
+        ):
             logger.info(f"The type of boolean variable {var} is not correctly set.")
             var = BooleanVar(var)
         if var not in self._bool_var_set:
@@ -964,12 +973,20 @@ class XADD:
             return self.get_internal_node(expr_index, low=low, high=high)
         return None
 
-    def substitute(self, node_id: int, subst_dict: dict) -> int:
+    def substitute(
+            self,
+            node_id: int,
+            subst_dict: Dict[core.Symbol, Union[core.Basic, float, int]]
+    ) -> int:
         """
         Symbolic substitution method.
-        :param node_id:             (int)
-        :param subst_dict:          (dict)
-        :return:
+
+        Args:
+            node_id (int): The ID of the node to be updated.
+            subst_dict (dict): A dictionary of substitutions.
+                A key is a variable and a value is an expression.
+        Returns:
+            int: The ID of the resulting node.
         """
         subst_cache = {}
         return self.reduce_sub(node_id, subst_dict, subst_cache)
@@ -980,12 +997,14 @@ class XADD:
             subst_dict: Dict[core.Symbol, Union[core.Basic, float, int]], 
             subst_cache: Dict[int, int],
     ) -> int:
-        """
+        """Recursively perform substitution.
 
-        :param node_id:
-        :param subst_dict:
-        :param subst_cache:
-        :return:
+        Args:
+            node_id (int): The ID of the node to be updated.
+            subst_dict (dict): A dictionary of substitutions.
+                A key is a variable and a value is an expression.
+        Returns:
+            int: The ID of the resulting node.
         """
         node = self.get_exist_node(node_id)
 
@@ -1012,7 +1031,7 @@ class XADD:
         dec = node.dec
         dec_expr = self._id_to_expr[dec]
         # When a Boolean variable is replaced
-        if isinstance(dec_expr, BooleanVar):
+        if isinstance(dec_expr, VAR_TYPE) and dec_expr.is_Boolean:
             sub_in = subst_dict.get(dec_expr, None)
             is_reversed = False
             if sub_in is not None:
@@ -1403,7 +1422,9 @@ class XADD:
             vars_in_expr = expr.free_symbols.copy()
             diff_vars = vars_in_expr.difference(self._cont_var_set).difference(self._bool_var_set)
             for v in diff_vars:
-                if isinstance(v, BooleanVar):
+                if isinstance(v, BooleanVar) or (
+                    isinstance(v, RandomVar) and str(v).startswith('Bernoulli')
+                ):
                     assert len(vars_in_expr) == 1, (
                         f'BooleanVar {v} should be the only variable in the expression.'
                     )
@@ -1467,11 +1488,13 @@ class XADD:
 
         # Handle boolean expressions.
         if not isinstance(expr, core.Rel):
-            if not expr.is_Boolean and expr.is_symbol:
-                logger.info(f"Variable {expr} will be treated as Boolean")
-                expr = BooleanVar(expr)
+            if not isinstance(expr, BooleanVar) and expr.is_symbol:
+                if not (isinstance(expr, RandomVar) and str(expr).startswith('Bernoulli')):
+                    expr = BooleanVar(expr)
+                if expr not in self._bool_var_set:
+                    logger.info(f'Random variable {expr} will be treated as Boolean')
                 if expr in self._cont_var_set:
-                    self._cont_var_set.remove(expr.var)
+                    self._cont_var_set.remove(expr)
                 self.add_boolean_var(expr)
             else:
                 assert expr.is_Boolean and expr.is_symbol, (
@@ -1566,8 +1589,8 @@ class XADD:
             # Add in all new variables.
             # (1) If a single symbol, it has to be Boolean.
             if isinstance(expr, VAR_TYPE):
-                assert not isinstance(expr, RandomVar), (
-                    'Currently, we do not use a single RV as a decision variable.'
+                logger.info(
+                    f'Variable {expr} of type ({type(expr)}) is used as a decision variable.'
                 )
                 self.add_boolean_var(expr)
             # (2) Otherwise, all continuous variables, including RVs.
@@ -1735,7 +1758,17 @@ class XADD:
         Returns:
             int: The resulting XADD node ID.
         """
-        return self.RLPContext.reduce_lp(node_id)
+        if self.perform_reduce_lp:
+            return self.RLPContext.reduce_lp(node_id)
+        return node_id
+
+    @property
+    def perform_reduce_lp(self):
+        return self._perform_reduce_lp
+
+    @perform_reduce_lp.setter
+    def perform_reduce_lp(self, val: bool):
+        self._perform_reduce_lp = val
 
     """
     Related to MILP compilation of XADD.

@@ -10,6 +10,15 @@ def log1p(x: core.Basic):
     return core.sympify(log1p)
 
 
+def _to_float(x, *args):
+    if isinstance(x, core.Rational):
+        return x
+    elif isinstance(x, core.BooleanAtom):
+        return float(bool(x))
+    else:
+        return float(x)
+
+
 REL_TYPE = {core.LessThan: '<=', core.StrictLessThan: '<',
             core.GreaterThan: '>=', core.StrictGreaterThan: '>',
             core.Equality: '==', core.Unequality: '!='}
@@ -30,7 +39,7 @@ UNARY_OP = {
     'floor': core.floor, 'ceil': core.ceiling,
     'log1p': log1p, '-': lambda x: -x, '+': lambda x: x,
     'int': lambda x, *args: 1 if x else 0,
-    'float': lambda x, *args: float(bool(x)) if isinstance(x, core.BooleanAtom) else float(x),
+    'float': _to_float,
 }
 EPSILON = 1e-1
 TIMEOUT = 200
