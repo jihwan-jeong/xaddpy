@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 import symengine
 import symengine.lib.symengine_wrapper as core
 
@@ -132,14 +133,18 @@ def test_reduce_lp():
     orig_dd = context.make_canonical(orig_dd)
 
     print(f"Original XADD (not canonical form): \n{context.get_repr(orig_dd)}")
+    stime = time.time()
     orig_dd = context.reduce_lp(orig_dd)
+    print(f"Time taken: {time.time() - stime}")
     print(f"After calling reduce_lp: \n{context.get_repr(orig_dd)}")   
     
     # Substitute x = 2 * y + 5
     subst = {x: 2 * y + 5}
     subst_dd = context.substitute(orig_dd, subst)
     print(f"Substitute `x = 2 * y + 5`\nResult (before reduce_lp): \n{context.get_repr(subst_dd)}")
+    stime = time.time()
     res = context.reduce_lp(subst_dd)
+    print(f"Time taken: {time.time() - stime}")
     print(f"\nAfter reduce_lp: \n{context.get_repr(res)}")
 
 

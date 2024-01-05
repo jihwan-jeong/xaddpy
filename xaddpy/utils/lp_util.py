@@ -33,11 +33,31 @@ VAR_TYPE = core.Symbol | BooleanVar | RandomVar
 
 
 class GUROBI(pl.GUROBI):
+
+    def actualSolve(self, lp: pl.LpProblem, callback=None):
+        """Modifies the original method with addtional delaying option."""
+        assert hasattr(lp, 'require_rebuild')
+        if lp.require_rebuild:
+            return super().actualSolve(lp, callback=callback)
+        else:
+            # Just update the Gurobi model.
+            lp.solverModel.update()
+            self.callSolver(lp, callback=callback)
+            # Get the solution information.
+            solutionStatus = self.findSolutionValues(lp)
+            for var in lp._variables:
+                var.modified = False    # What is this for?
+            for name, constraint in lp.constraints.items():
+                gp_constraint = lp.solverModel.getConstrByName(name)
+                constraint.solverConstraint = gp_constraint
+                constraint.modified = False     # What is this for?
+            return solutionStatus
+
     def buildSolverModel(self, lp: pl.LpProblem):
-        from pulp import PulpSolverError, constants, log
+        from pulp import PulpSolverError, constants
 
         ### Copy the original code from the parent class ###
-        log.debug("set the sense of the problem")
+        lp.solverModel = gp.Model(lp.name)
         if lp.sense == constants.LpMaximize:
             lp.solverModel.setAttr("ModelSense", -1)
         if self.timeLimit:
@@ -48,8 +68,9 @@ class GUROBI(pl.GUROBI):
             lp.solverModel.setParam("MIPGap", gapRel)
         if logPath:
             lp.solverModel.setParam("LogFile", logPath)
+        # Add a new attribute to the Gurobi model.
+        lp.solverModel._var_name_to_var = {}
 
-        log.debug("add the variables to the problem")
         for var in lp.variables():
             lowBound = var.lowBound
             if lowBound is None:
@@ -64,6 +85,8 @@ class GUROBI(pl.GUROBI):
             var.solverVar = lp.solverModel.addVar(
                 lowBound, upBound, vtype=varType, obj=obj, name=var.name
             )
+            lp.solverModel._var_name_to_var[var.name] = var.solverVar
+
         if self.optionsDict.get("warmStart", False):
             # Once lp.variables() has been used at least once in the building of the model.
             # we can use the lp._variables with the cache.
@@ -72,7 +95,6 @@ class GUROBI(pl.GUROBI):
                     var.solverVar.start = var.varValue
 
         lp.solverModel.update()
-        log.debug("add the Constraints to the problem")
         for name, constraint in lp.constraints.items():
             # build the expression
             expr = gp.LinExpr(
@@ -93,16 +115,16 @@ class GUROBI(pl.GUROBI):
         #### End of the original code from the parent class ####
         
         # Add indicator constraints
-        log.debug("add the indicator constraints to the problem")
-        for i_constr in lp._i_constr_cache.values():
-            binvar, binval, lhs, sense, rhs, name = i_constr
-            binvar = binvar.solverVar
-            gp_lhs = self.get_gurobi_expr(lhs)
-            gp_rhs = self.get_gurobi_expr(rhs)
-            if not isinstance(gp_rhs, (int, float)):
-                gp_lhs, gp_rhs = gp_rhs - gp_lhs, 0
-            lp.solverModel.addGenConstrIndicator(binvar, binval, gp_lhs, sense, gp_rhs, name)
-        lp.solverModel.update()
+        if hasattr(lp, '_i_constr_cache'):
+            for i_constr in lp._i_constr_cache.values():
+                binvar, binval, lhs, sense, rhs, name = i_constr
+                binvar = binvar.solverVar
+                gp_lhs = self.get_gurobi_expr(lhs)
+                gp_rhs = self.get_gurobi_expr(rhs)
+                if not isinstance(gp_rhs, (int, float)):
+                    gp_lhs, gp_rhs = gp_rhs - gp_lhs, 0
+                lp.solverModel.addGenConstrIndicator(binvar, binval, gp_lhs, sense, gp_rhs, name)
+            lp.solverModel.update()
 
     def get_gurobi_expr(
             self, expr: Union[core.Number, int, float, pl.LpAffineExpression, pl.LpVariable]
@@ -219,6 +241,7 @@ class Model(BasePULPModel):
             raise NotImplementedError
         super().__init__(backend=backend, **kwargs)
         self._model = pl.LpProblem(name, sense=sense)
+        self._constr_cache = {}
 
     def set_model_name(self, name: str):
         self._model.name = name
@@ -288,8 +311,9 @@ class Model(BasePULPModel):
             var_lst[i] = v
         return var_lst
 
-    def addConstr(self, constr: pl.LpConstraint, name='', *args, **kwargs):
+    def addConstr(self, constr: pl.LpConstraint, name: str, *args, **kwargs):
         assert name != '', "A constraint should have a name"
+        self._constr_cache[name] = constr
         self._model.addConstraint(constr, name=name)
 
     def get_constraints(self):
@@ -339,6 +363,26 @@ class GurobiModel(Model):
         super().__init__(name, backend, sense, msg, **kwargs)
         assert isinstance(self._solver, pl.GUROBI)
         self._i_constr_cache = {}   # indicator constraints
+        self._gp_constr_to_remove = {}
+        self._model.require_rebuild = True  # Set to True only at the beginning.
+
+    def solve(self, *args, **kwargs):
+        res = super().solve(*args, **kwargs)
+        self._model.require_rebuild = False
+        return res
+
+    def removeConstrByName(self, name: str):
+        # Remove from the LpProblem object.
+        name = name.replace('-', 'm')
+        pl_constr = self._model.constraints.pop(name)
+
+        # Remove from the underlying Gurobi model.
+        if hasattr(self._model, 'solverModel') and self._model.solverModel is not None:
+            if hasattr(pl_constr, 'solverConstraint') and (
+                pl_constr.solverConstraint is not None
+            ):
+                gp_constr = pl_constr.solverConstraint
+                self._model.solverModel.remove(gp_constr)
 
     def addGenConstrIndicator(
             self,
@@ -609,6 +653,32 @@ def convert_rhs(
                                     m,
                                     data_idx=data_idx,
                                     incl_bound=incl_bound)
+
+
+def pulp_constr_to_gurobi_constr(
+        m, name: str, constr: pl.LpConstraint
+) -> Tuple[gp.Constr, Tuple[gp.LinExpr, str, float | int]]:
+    # Return if already there.
+    if hasattr(constr, 'solverConstraint') and constr.solverConstraint is not None:
+        return constr.solverConstraint
+    # Otherwise, convert to a Gurobi one.
+    assert hasattr(m, '_var_name_to_var')
+    expr = gp.LinExpr(
+        list(constr.values()), [m._var_name_to_var[v.name] for v in constr.keys()]
+    )
+    if constr.sense == const.LpConstraintLE:
+        rel = GRB.LESS_EQUAL
+    elif constr.sense == const.LpConstraintGE:
+        rel = GRB.GREATER_EQUAL
+    elif constr.sense == const.LpConstraintEQ:
+        rel = GRB.EQUAL
+    else:
+        raise pl.PulpSolverError("Detected an invalid constraint type")
+    gp_constr = m.addConstr(
+        expr, rel, -constr.constant, name
+    )
+    constr.solverConstraint = gp_constr
+    return gp_constr, (expr, rel, -constr.constant)
 
 
 def set_equality_constraint(var, rhs, pl_model, incl_bound=False):

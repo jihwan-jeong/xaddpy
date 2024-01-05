@@ -1,12 +1,14 @@
 from typing import Dict, FrozenSet, Optional, Set, cast
+from gurobipy import GRB
 
 import psutil
 import pulp as pl
+from pulp import const
 import symengine.lib.symengine_wrapper as core
 
 from xaddpy.utils.global_vars import LP_BACKEND, REL_NEGATED, REL_TYPE
 from xaddpy.utils.logger import logger
-from xaddpy.utils.lp_util import Model, convert_to_pulp_expr
+from xaddpy.utils.lp_util import Model, GurobiModel, convert_to_pulp_expr, pulp_constr_to_gurobi_constr
 from xaddpy.utils.symengine import BooleanVar
 from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 
@@ -198,15 +200,17 @@ class LocalReduceLP:
         # and determine if feasible or infeasible.
         self.lp = LP(self.context) if not self.lp else self.lp
         lp = self.lp
+        m = lp.model
 
-        # Remove all previously set constraints and reset the objective.
-        lp.reset()
-        lp.set_objective(1)
+        # Check for constraints to remove or add.
+        constrs = lp.check_constraints(test_dec, lp.added_decisions[m])
 
-        # Add constraints as given by decisions in test_dec.
-        for dec in test_dec:
-            lp.add_decision(dec)
-
+        # Add new constraints.
+        for dec in constrs['add']:
+            lp.add_decision(dec=dec, m=m, require_rebuild=lp.require_rebuild)
+        # Remove old constraints.
+        for dec in constrs['remove']:
+            lp.remove_decision(dec=dec, m=m)
         # Optimize the model to see if infeasible.
         try:
             status = lp.solve()
@@ -293,19 +297,50 @@ class LocalReduceLP:
 class LP:
     def __init__(self, context):
         self._context = context
-        self.model = Model(
+        kwargs = dict(
             name='LPReduce',
             backend=LP_BACKEND,
             sense=pl.LpMaximize,
-            msg=False                   # Turn off printing
+            msg=False,
         )
-        self.model.setObjective(1)      # Any objective suffices as we only check for feasibility
-        self.model.setAttr('_var_to_bound', context._var_to_bound)
+        if LP_BACKEND == 'gurobi':
+            kwargs['backend'] = 'gurobi_custom'
+            self.model = GurobiModel(**kwargs)
+            self.slack_model = GurobiModel(**kwargs)
+        else:
+            self.model = Model(**kwargs)
+            self.slack_model = Model(**kwargs)
 
-        # Variable management
+        # Set some model params.
+        self.model.setObjective(1)      # We are only checking for feasibility.
+        self.model.setAttr('_var_to_bound', context._var_to_bound)
         self.model.set_sym_to_pulp_dict(self.context._sym_to_pulp)
+
+        # Define a positive slack variable and set it as the objective for maximization.
+        S = self.slack_model.addVar(lb=0, name='Slack')
+        self.slack_model.setObjective(S)
+        self.slack_model.setAttr('_var_to_bound', context._var_to_bound)
+        self.slack_model.set_sym_to_pulp_dict(self.context._sym_to_pulp)
+        self.S = S
+        self.slack_model.require_rebuild = True
+
+        # Cache some useful variables.
         self._sym_to_pulp = self.context._sym_to_pulp
         self._lhs_expr_to_pulp = {}
+        self._name_to_solver_constr = {
+            self.model: {}, self.slack_model: {}
+        }
+
+        # Constraint management.
+        self.added_decisions: Dict[Set[int]] = {
+            self.model: set(), self.slack_model: set()
+        }
+
+    @property
+    def require_rebuild(self):
+        if hasattr(self.model._model, 'require_rebuild'):
+            return self.model._model.require_rebuild
+        return True
 
     @property
     def context(self):
@@ -314,17 +349,50 @@ class LP:
     def reset(self):
         self.model.reset()
 
-    def add_decision(self, dec: int) -> None:
-        # Check if the constraint has already been added to the model
-        constraint = self.model.get_constraint_by_name(f'dec({dec})')
-        if constraint is not None:
-                return
-        if dec > 0:
-            self.add_constraint(dec, True)
-        else:
-            self.add_constraint(-dec, False)
+    def check_constraints(
+            self, test_dec: Set[int], added_decisions: Set[int],
+    ) -> Dict[str, Set[int]]:
+        """Checks the constraints to remove or add.
+        
+        Args:
+            test_dec (Set[int]): The set of decisions.
+            added_decisions (Set[int]): The set of decisions
+                that have already been added to the model.
 
-    def add_constraint(self, dec: int, is_true: bool):
+        Returns:
+            Dict[str, Set[int]]: The dictionary of constraints to remove or add.
+        """
+        constrs_to_add = test_dec.difference(added_decisions)
+        constrs_to_remove = added_decisions.difference(test_dec)
+        constrs_to_keep = added_decisions.intersection(test_dec)
+        return dict(
+            add=constrs_to_add,
+            remove=constrs_to_remove,
+            keep=constrs_to_keep,
+        )
+
+    def add_decision(
+            self, dec: int, m: Model = None, require_rebuild: bool = True
+    ):
+        if m is None:
+            m = self.model
+        # Check if the constraint has already been added to the model
+        constraint = m.get_constraint_by_name(f'dec({dec})'.replace('-', 'm'))
+        if not require_rebuild and constraint is not None:
+            return
+        if dec > 0:
+            self.add_constraint(m, dec, True, require_rebuild)
+        else:
+            self.add_constraint(m, -dec, False, require_rebuild)
+
+    def add_constraint(
+            self,
+            m: Model,
+            dec: int,
+            is_true: bool,
+            require_rebuild: bool,
+            add_slack: bool = False,
+    ):
         """
         Given an integer id for a decision expression (and whether it's true or false),
             add the expression to LP problem.
@@ -335,36 +403,84 @@ class LP:
                     for x1 + x2 + x3 <= 10
 
         Args:
+            m (Model):      The LP model.
             dec (int):      Decision ID.
             is_true (bool): Whether the decision is true or false.
+            require_rebuild (bool): Whether to rebuild the model.
+            add_slack (bool, optional): Whether to add slack variable.
+                Defaults to False.
         """
         dec_expr = self.context._id_to_expr[dec]
         dec = dec if is_true else -dec
+        name = f'dec({dec})'.replace('-', 'm')
+        S = self.S if add_slack else 0
 
-        # Handle relational conditionals
+        # Handle relational conditionals.
         if isinstance(dec_expr, core.Rel):
             lhs, rhs = dec_expr.args
             rel = REL_TYPE[type(dec_expr)]
             if not is_true:
                 rel = REL_NEGATED[rel]
 
-            assert rhs == 0, "RHS of a relational expression should always be 0 by construction!"
-            lhs_pulp = self.convert_expr(lhs)                 # Convert lhs to pulp expression (rhs=0)
+            assert rhs == 0, (
+                "RHS of a relational expression should always be 0 by construction!"
+            )
+            lhs_pulp = self.convert_expr(lhs)   # Convert lhs to pulp expression (rhs=0)
 
             if rel == '>' or rel == '>=':
-                self.model.addConstr(lhs_pulp >= 0, name=f'dec({dec})')
+                m.addConstr(lhs_pulp - S >= 0, name=name)
             elif rel == '<' or rel == '<=':
-                self.model.addConstr(lhs_pulp <= 0, name=f'dec({dec})')
+                m.addConstr(lhs_pulp + S <= 0, name=name)
 
-        # Handle Boolean decisions
+        # Handle Boolean decisions.
         elif dec_expr.is_Boolean:
+            assert not add_slack
             bool_pulp = self.convert_expr(dec_expr, binary=True)
             if is_true:
-                self.model.addConstr(bool_pulp == 1, name=f'dec({dec})')
+                m.addConstr(bool_pulp == 1, name=name)
             else:
-                self.model.addConstr(bool_pulp == 0, name=f'dec({dec})')
+                m.addConstr(bool_pulp == 0, name=name)
         else:
             raise NotImplementedError("Decision expression not supported")
+
+        # TODO: we are assuming Gurobi solver here.
+        # If we have a solver model, add the constraint to the model.
+        if not require_rebuild:
+            assert hasattr(m._model, 'solverModel'), (
+                "Underlying solver model not found!"
+            )
+            solver_constr = self._name_to_solver_constr[m].get(name)
+            if solver_constr is None:
+                pl_constr = m._constr_cache[name]
+                # Add any variables not in the solver model.
+                for v in pl_constr.keys():
+                    check = m._model.solverModel._var_name_to_var.get(v.name)
+                    if check is not None:
+                        continue
+                    lb, ub = v.lowBound, v.upBound
+                    lb = -GRB.INFINITY if lb is None else lb
+                    ub = GRB.INFINITY if ub is None else ub
+                    vtype = GRB.CONTINUOUS
+                    if v.cat == const.LpInteger:
+                        vtype = GRB.BINARY
+                    solver_var = m._model.solverModel.addVar(
+                        lb=lb, ub=ub, vtype=vtype, name=v.name
+                    )
+                    m._model.solverModel._var_name_to_var[v.name] = solver_var
+
+                solver_constr, lhs_rel_rhs = pulp_constr_to_gurobi_constr(
+                    m._model.solverModel, name, pl_constr)
+                self._name_to_solver_constr[m][name] = lhs_rel_rhs
+            else:
+                m._model.solverModel.addConstr(*solver_constr, name=name)
+
+        # Keep track of added decisions.
+        self.added_decisions[m].add(dec)
+
+    def remove_decision(self, dec: int, m: Model):
+        """Removes the constraint corresponding to the given decision ID."""
+        m.removeConstrByName(f'dec({dec})'.replace('-', 'm'))
+        self.added_decisions[m].remove(dec)
 
     def solve(self) -> Optional[int]:
         """
@@ -415,42 +531,36 @@ class LP:
         # Check if test_slack is turned off by context (this happens at the time of arg substitution)
         if not self.context._prune_equality:
             return infeasible
-        
-        # Remove all pre-existing constraints
-        self.model.reset_constraints()
 
-        # Define a positive slack variable and set it as the objective for maximization
-        S = self.model.getVarByName('Slack')
-        if S is None:
-            S = self.model.addVar(lb=0, name='Slack')
-        self.model.setObjective(S)
+        m = self.slack_model        
 
-        # Reset constraint for each decision in test_dec
-        # Note: for testing slack, we skip checking boolean variables
-        for dec in test_dec:
-            negated = True if dec < 0 else False
+        # Check for constraints to remove or add.
+        constrs = self.check_constraints(test_dec, self.added_decisions[m])
 
-            dec_expr = self.context._id_to_expr[-dec] if negated else self.context._id_to_expr[dec]
-            if isinstance(dec_expr, core.Rel):
-                lhs, rhs = dec_expr.args
-                assert rhs == 0, "RHS of a relational expression should always be 0 by construction!"
-                rel = REL_TYPE[type(dec_expr)]
-                lhs_pulp = self.convert_expr(lhs)
-                
-                if negated: rel = REL_NEGATED[rel]
+        # Add new constraints.
+        for dec in constrs['add']:
+            # Skip Boolean decisions.
+            dec_expr = (
+                self.context._id_to_expr[-dec] if dec < 0 else 
+                self.context._id_to_expr[dec]
+            )
+            if not isinstance(dec_expr, core.Rel):
+                continue
 
-                # Create Constraint
-                if rel == '<=' or rel == '<':
-                    self.model.addConstr(lhs_pulp + S <= 0, name=f'dec({dec})')
-                else:
-                    self.model.addConstr(lhs_pulp - S >= 0, name=f'dec({dec})')
-        
-        if len(self.model.get_constraints()) == 0:
+            self.add_constraint(
+                m, abs(dec), dec > 0, require_rebuild=m.require_rebuild, add_slack=True)
+
+        # Remove old constraints.
+        for dec in constrs['remove']:
+            self.remove_decision(dec, m)
+
+        if len(m.get_constraints()) == 0:
             return infeasible
-        
+
         # Optimize the model to see if infeasible
         try:
-            status = self.solve()
+            status = m.solve()
+            m.require_rebuild = False
         except Exception as e:
             logger.error(e)
             exit(1)
@@ -459,13 +569,13 @@ class LP:
         # Turn off the functionality and resolve
         # TODO: How to handle dualreductions for other solvers than Gurobi?
         if status in (pl.LpStatusInfeasible, pl.LpStatusUnbounded, pl.LpStatusUndefined):
-            self.model.toggle_direct_solver_on()
-            self.model.setParam('DualReductions', 0)
-            status = self.solve()
-            self.model.setParam('DualReductions', 1)
-            self.model.toggle_direct_solver_off()
+            m.toggle_direct_solver_on()
+            m.setParam('DualReductions', 0)
+            status = m.solve()
+            m.setParam('DualReductions', 1)
+            m.toggle_direct_solver_off()
 
-        opt_obj = self.model.objVal if status == pl.LpStatusOptimal else 1e100
+        opt_obj = m.objVal if status == pl.LpStatusOptimal else 1e100
 
         if status == pl.LpStatusInfeasible:
             logger.warning("Infeasibility at test 2 should not have occurred!")
