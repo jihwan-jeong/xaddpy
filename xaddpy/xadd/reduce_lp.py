@@ -13,6 +13,7 @@ from xaddpy.utils.symengine import BooleanVar
 from xaddpy.xadd.node import Node, XADDINode, XADDTNode
 
 default_check_redundancy = True
+TEST_SLACK = True
 
 
 class ReduceLPContext:
@@ -227,7 +228,8 @@ class LocalReduceLP:
             return infeasible
 
         ## Test 2: test slack.
-        infeasible = lp.test_slack(test_dec)
+        if TEST_SLACK:
+            infeasible = lp.test_slack(test_dec)
         return infeasible
     
     def is_result_implied(self, test_dec: Set[int], subtree: int, goal: int) -> bool:
