@@ -466,6 +466,9 @@ The results tells us that the maximum achievable reward is 142.5 when `d=True, x
 
 Eliminating Boolean variables with max or min operations can be easily done by using the previously discussed `min_or_max_var` method. You just need to pass the Boolean variable to the method.
 
+#### Definite Integral
+
+Given an XADD node and a symbolic variable, you can integrate out the variable from the node. See [test_def_int.py](xaddpy/tests/test_def_int.py) which provides examples of this operation.
 
 ## Citation
 

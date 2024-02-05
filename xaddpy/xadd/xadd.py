@@ -21,7 +21,7 @@ except ImportError:
 from xaddpy.utils.global_vars import (
     REL_TYPE, OP_TYPE, UNARY_OP, RELATIONAL_OPERATOR, ACCEPTED_RV_TYPES
 )
-import xaddpy.utils.util
+import xaddpy.utils.util as xadd_util
 from xaddpy.utils.util import check_sym_boolean, sample_rvs, check_expr_linear
 from xaddpy.utils.logger import logger
 from xaddpy.utils.symengine import BooleanVar, RandomVar
@@ -1368,7 +1368,7 @@ class XADD:
         """Computes a definite integral over a variable in an XADD."""
         integrator = XADDLeafDefIntegral(var, self)
         _ = self.reduce_process_xadd_leaf(node_id, integrator, [], [])
-        return integrator._running_sum
+        return integrator.running_sum
 
     def get_repr(self, node_id: int) -> str:
         # For printing out the representation.
@@ -1949,6 +1949,69 @@ class XADD:
         graph.draw(f_path, prog='dot')
 
 
+
+def get_xadd_bounds(
+        context: XADD,
+        v: core.Symbol,
+        decisions: List[core.Basic],
+        decision_values: List[bool],
+        lb: float | core.Number = -oo,
+        ub: float | core.Number = oo,
+) -> Tuple[int, int, List[Tuple[core.Basic, bool]]]:
+    """Returns the lower and upper bound XADDs for a given variable."""
+    lower_bound = [core.S(lb)]
+    upper_bound = [core.S(ub)]
+
+    # Independent decisions.
+    var_indep_decisions = []
+
+    for dec_expr, is_true in zip(decisions, decision_values):
+        # Check boolean decisions or if `v` is in `dec_expr`.
+        if isinstance(dec_expr, BooleanVar) or v not in dec_expr.atoms():
+            var_indep_decisions.append((dec_expr, is_true))
+            continue
+
+        lhs, rhs = dec_expr.args[0], dec_expr.args[1]
+        lt = isinstance(dec_expr, core.LessThan)
+        lt = (lt and is_true) or (not lt and not is_true)
+        expr = lhs <= rhs if lt else lhs >= rhs
+
+        # Get bounds over `v`.
+        bound_expr, upper = xadd_util.get_bound(v, expr)
+        if upper:
+            upper_bound.append(bound_expr)
+        else:
+            lower_bound.append(bound_expr)
+
+    # lower bound over `v` is the maximum among lower bounds.
+    xadd_lower_bound = -1
+    for e in lower_bound:
+        xadd_lower_bound = (
+            context.get_leaf_node(e) if xadd_lower_bound == -1
+            else context.apply(xadd_lower_bound, context.get_leaf_node(e), op='max'))
+
+    # upper bound over `v` is the minimum among upper bounds.
+    xadd_upper_bound = -1
+    for e in upper_bound:
+        xadd_upper_bound = (
+            context.get_leaf_node(e) if xadd_upper_bound == -1
+            else context.apply(xadd_upper_bound, context.get_leaf_node(e), op='min'))
+
+    # Reduce lower and upper bound xadds.
+    xadd_lower_bound = context.reduce_lp(xadd_lower_bound)
+    xadd_upper_bound = context.reduce_lp(xadd_upper_bound)
+
+    # Ensure lower bounds are smaller than upper bounds.
+    for e1 in lower_bound:
+        for e2 in upper_bound:
+            comp = core.LessThan((e1 - e2).expand(), 0)     # lb - ub <= 0.
+            if comp == core.true or e2 == oo or e1 == -oo:
+                continue
+            var_indep_decisions.append((comp, True))
+
+    return xadd_lower_bound, xadd_upper_bound, var_indep_decisions
+
+
 class NullDec:
     def __hash__(self):
         return 0
@@ -2096,7 +2159,16 @@ class XADDLeafDefIntegral(XADDLeafIndefIntegral):
         context: XADD,
     ):
         super().__init__(var, context)
-        self._running_sum = context.ZERO
+        self.running_sum = context.ZERO
+        if var in context._var_to_bound:
+            lb, ub = context._var_to_bound[var]
+            if lb == float('-inf'):
+                lb = -oo
+            if ub == float('inf'):
+                ub = oo
+            self.lower_bound, self.upper_bound = lb, ub
+        else:
+            self.lower_bound, self.upper_bound = -oo, oo
 
     def process_xadd_leaf(
             self,
@@ -2118,24 +2190,34 @@ class XADDLeafDefIntegral(XADDLeafIndefIntegral):
             iv. what to do on encountering summation?  breaks into
                 individual subproblems of the above, all results summed together!
         """
-        int_var_indep_decisions = {}
+        # Bound management.
+        xadd_lower_bound, xadd_upper_bound, target_var_indep_decisions = get_xadd_bounds(
+            self._context, self.var, decisions, decision_values, self.lower_bound, self.upper_bound)
+        
+        # Compute the integral of this leaf w.r.t. the integration variable using SymPy.
+        sympy_leaf = leaf_val._sympy_()
+        sympy_var = self.var._sympy_()
+        sympy_integral = sp.integrate(sympy_leaf, sympy_var)
+        leaf_integral = core.sympify(sympy_integral)
 
-        # Upper and lower bounds based on the decisions.
-        lower_bound, upper_bound = [], []
+        # Compute: leaf_integral{int_var = xadd_upper_bound} - leaf_integral{int_var = xadd_lower_bound}.
+        int_eval_lower = self._context.substitute_xadd_for_var_in_expr(
+            leaf_integral, var=self.var, xadd=xadd_lower_bound)
+        int_eval_upper = self._context.substitute_xadd_for_var_in_expr(
+            leaf_integral, var=self.var, xadd=xadd_upper_bound)
+        int_eval = self._context.apply(int_eval_upper, int_eval_lower, 'subtract')
 
-        for dec_expr, is_true in zip(decisions, decision_values):
-            if isinstance(dec_expr, BooleanVar):
-                int_var_indep_decisions[dec_expr] = is_true
-                continue
-            assert isinstance(dec_expr, core.Rel), (
-                f'Expected a relational expression, but got {dec_expr}'
-                f' of type {type(dec_expr)}'
-            )
-            lhs, rhs = dec_expr.args
-            assert rhs == 0, (
-                f'Expected the rhs of the decision to be 0, but got {rhs}'
-            )
-        raise RuntimeError("Not implemented yet")
+        # Finally, multiply in boolean decisions and irrelevant comparisons.
+        for dec, is_true in target_var_indep_decisions:
+            high_val = core.S(1) * int(is_true)
+            low_val = core.S(1) * (1 - int(is_true))
+            int_eval = self._context.apply(
+                int_eval, self._context.get_dec_node(dec, low_val, high_val), 'prod')
+        self.running_sum = self._context.apply(self.running_sum, int_eval, 'add')
+
+        # All return information is stored in _runningSum so no need to return anything.
+        # Just keep the original diagram as-is.
+        return self._context.get_leaf_node(leaf_val)
 
 
 class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
@@ -2194,63 +2276,8 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
             return self._context.get_leaf_node(leaf_val)
 
         # Bound management.
-        lower_bound = []
-        upper_bound = []
-        lower_bound.append(core.S(self._lower_bound))
-        upper_bound.append(core.S(self._upper_bound))
-
-        # Independent decisions (incorporated later): [(dec_expr, bool)]
-        target_var_indep_decisions = []
-
-        # Get lower and upper bounds over the variable.
-        for dec_expr, is_true in zip(decisions, decision_values):
-            # Check boolean decisions or if self._var in dec_expr.
-            if (dec_expr in self._context._bool_var_set) or (self._var not in dec_expr.atoms()):
-                target_var_indep_decisions.append((dec_expr, is_true))
-                continue
-            lhs, rhs = dec_expr.args
-            lt = isinstance(dec_expr, core.LessThan)
-            lt = (lt and is_true) or (not lt and not is_true)
-            expr = lhs <= rhs if lt else lhs >= rhs
-
-            # Get bounds over 'var'.
-            bound_expr, upper = xaddpy.utils.util.get_bound(self._var, expr)
-            if upper:
-                upper_bound.append(bound_expr)
-            else:
-                lower_bound.append(bound_expr)
-
-        # lower bound over 'var' is the maximum among lower bounds.
-        xadd_lower_bound = -1
-        for e in lower_bound:
-            xadd_lower_bound = self._context.get_leaf_node(e) \
-                                if xadd_lower_bound == -1 \
-                                else self._context.apply(
-                                    xadd_lower_bound,
-                                    self._context.get_leaf_node(e),
-                                    op='max')
-
-        xadd_upper_bound = -1
-        for e in upper_bound:
-            xadd_upper_bound = self._context.get_leaf_node(e) \
-                                if xadd_upper_bound == -1 \
-                                else self._context.apply(
-                                    xadd_upper_bound,
-                                    self._context.get_leaf_node(e),
-                                    op='min')
-
-        # Reduce lower and upper bound xadds for potential computational gains.
-        xadd_lower_bound = self._context.reduce_lp(xadd_lower_bound)
-        xadd_upper_bound = self._context.reduce_lp(xadd_upper_bound)
-
-        # Ensure lower bounds are smaller than upper bounds
-        for e1 in lower_bound:
-            for e2 in upper_bound:
-                comp = core.LessThan((e1 - e2).expand(), 0)     # lb - ub <= 0
-                if comp == core.true or \
-                        e2 == oo or e1 == -oo:
-                    continue
-                target_var_indep_decisions.append((comp, True))
+        xadd_lower_bound, xadd_upper_bound, target_var_indep_decisions = get_xadd_bounds(
+            self._context, self._var, decisions, decision_values, self._lower_bound, self._upper_bound)
 
         # Substitute lower and upper bounds into leaf node.
         eval_lower = self._context.substitute_xadd_for_var_in_expr(
@@ -2275,11 +2302,11 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
                 C \oplus D
             Then, we should canonicalize the resulting node. 
         """
-        is_bilinear = xaddpy.utils.util.is_bilinear(leaf_val)
+        is_bilinear = xadd_util.is_bilinear(leaf_val)
         expr = 0
         if is_bilinear:
             # Get the expression multiplied to `self._var`
-            expr = xaddpy.utils.util.get_multiplied_expr(leaf_val, self._var)
+            expr = xadd_util.get_multiplied_expr(leaf_val, self._var)
         if is_bilinear and expr != 0:
             dec_expr = expr <= 0
             if dec_expr == core.true:
@@ -2426,64 +2453,8 @@ class XADDLeafMinOrMax(XADDLeafOperation):
             return self._context.get_leaf_node(leaf_val)
 
         # Bound management.
-        lower_bound = []
-        upper_bound = []
-        lower_bound.append(core.S(self._lower_bound))
-        upper_bound.append(core.S(self._upper_bound))
-
-        # Independent decisions (incorporated later): [(dec_expr, bool)]
-        target_var_indep_decisions = []
-
-        # Get lower and upper bounds over the variable.
-        for dec_expr, is_true in zip(decisions, decision_values):
-            # Check boolean decisions or if self._var in dec_expr.
-            if (dec_expr in self._context._bool_var_set) or (self._var not in dec_expr.atoms()):
-                target_var_indep_decisions.append((dec_expr, is_true))
-                continue
-
-            lhs, rhs = dec_expr.args[0], dec_expr.args[1]
-            lt = isinstance(dec_expr, core.LessThan)
-            lt = (lt and is_true) or (not lt and not is_true)
-            expr = lhs <= rhs if lt else lhs >= rhs
-
-            # Get bounds over 'var'.
-            bound_expr, upper = xaddpy.utils.util.get_bound(self._var, expr)
-            if upper:
-                upper_bound.append(bound_expr)
-            else:
-                lower_bound.append(bound_expr)
-
-        # lower bound over 'var' is the maximum among lower bounds.
-        xadd_lower_bound = -1
-        for e in lower_bound:
-            xadd_lower_bound = self._context.get_leaf_node(e) \
-                                if xadd_lower_bound == -1 \
-                                else self._context.apply(
-                                    xadd_lower_bound,
-                                    self._context.get_leaf_node(e),
-                                    op='max')
-
-        xadd_upper_bound = -1
-        for e in upper_bound:
-            xadd_upper_bound = self._context.get_leaf_node(e) \
-                                if xadd_upper_bound == -1 \
-                                else self._context.apply(
-                                    xadd_upper_bound,
-                                    self._context.get_leaf_node(e),
-                                    op='min')
-
-        # Reduce lower and upper bound xadds for potential computational gains.
-        xadd_lower_bound = self._context.reduce_lp(xadd_lower_bound)
-        xadd_upper_bound = self._context.reduce_lp(xadd_upper_bound)
-
-        # Ensure lower bounds are smaller than upper bounds.
-        for e1 in lower_bound:
-            for e2 in upper_bound:
-                comp = core.LessThan((e1 - e2).expand(), 0)     # lb - ub <= 0
-                if comp == core.true or \
-                        e2 == oo or e1 == -oo:
-                    continue
-                target_var_indep_decisions.append((comp, True))
+        xadd_lower_bound, xadd_upper_bound, target_var_indep_decisions = get_xadd_bounds(
+            self._context, self._var, decisions, decision_values, self._lower_bound, self._upper_bound)
 
         # Substitute lower and upper bounds into leaf node.
         eval_lower = self._context.substitute_xadd_for_var_in_expr(
@@ -2510,11 +2481,11 @@ class XADDLeafMinOrMax(XADDLeafOperation):
                 C \oplus D
             Then, we should canonicalize the resulting node. 
         """
-        is_bilinear = xaddpy.utils.util.is_bilinear(leaf_val)
+        is_bilinear = xadd_util.is_bilinear(leaf_val)
         expr = 0
         if is_bilinear:
             # Get the expression multiplied to `self._var`.
-            expr = xaddpy.utils.util.get_multiplied_expr(leaf_val, self._var)
+            expr = xadd_util.get_multiplied_expr(leaf_val, self._var)
         if is_bilinear and expr != 0:
             dec_expr = expr <= 0
             if dec_expr == core.true:
