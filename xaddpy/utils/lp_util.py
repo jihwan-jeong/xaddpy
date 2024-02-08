@@ -57,7 +57,9 @@ class GUROBI(pl.GUROBI):
         from pulp import PulpSolverError, constants
 
         ### Copy the original code from the parent class ###
-        lp.solverModel = gp.Model(lp.name)
+        self.initGurobi()
+        self.model.ModelName = lp.name
+        lp.solverModel = self.model
         if lp.sense == constants.LpMaximize:
             lp.solverModel.setAttr("ModelSense", -1)
         if self.timeLimit:
@@ -70,7 +72,8 @@ class GUROBI(pl.GUROBI):
             lp.solverModel.setParam("LogFile", logPath)
         # Add a new attribute to the Gurobi model.
         lp.solverModel._var_name_to_var = {}
-
+        lp.solverModel.update()
+        nvars = lp.solverModel.NumVars
         for var in lp.variables():
             lowBound = var.lowBound
             if lowBound is None:
@@ -82,10 +85,11 @@ class GUROBI(pl.GUROBI):
             varType = gp.GRB.CONTINUOUS
             if var.cat == constants.LpInteger and self.mip:
                 varType = gp.GRB.INTEGER
-            var.solverVar = lp.solverModel.addVar(
-                lowBound, upBound, vtype=varType, obj=obj, name=var.name
-            )
-            lp.solverModel._var_name_to_var[var.name] = var.solverVar
+            if not hasattr(var, "solverVar") or nvars == 0:
+                var.solverVar = lp.solverModel.addVar(
+                    lowBound, upBound, vtype=varType, obj=obj, name=var.name
+                )
+                lp.solverModel._var_name_to_var[var.name] = var.solverVar
 
         if self.optionsDict.get("warmStart", False):
             # Once lp.variables() has been used at least once in the building of the model.
@@ -93,10 +97,11 @@ class GUROBI(pl.GUROBI):
             for var in lp._variables:
                 if var.varValue is not None:
                     var.solverVar.start = var.varValue
-
         lp.solverModel.update()
+
+        # Add the constraints.
         for name, constraint in lp.constraints.items():
-            # build the expression
+            # build the expression.
             expr = gp.LinExpr(
                 list(constraint.values()), [v.solverVar for v in constraint.keys()]
             )
