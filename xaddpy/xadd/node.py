@@ -1,5 +1,5 @@
 import abc
-from typing import Union
+from typing import Optional, Union
 import warnings
 
 import symengine.lib.symengine_wrapper as core
@@ -60,7 +60,7 @@ class Node(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def to_graph(self, graph: Graph, node_id: int):
         pass
-    
+
 
 class XADDTNode(Node):
     def __init__(self, expr: core.Basic, annotation=None, context=None):
@@ -164,14 +164,12 @@ class XADDTNode(Node):
         # return ret
 
     def __repr__(self, level=0):
-        # curr_node_expr = self.expr
-        str_expr = f"( [{self.expr}] )"
-        str_node_id = f" node_id: {self._context._node_to_id.get(self)}"
+        str_node_id = f"[ node_id: {self._context._node_to_id.get(self)} ]"
         str_anno = f" anno: {self._annotation}" if self._annotation is not None else ""
         if self._print_node_info:
-            return str_expr + str_node_id + str_anno
+            return str_node_id + str_anno
         else:
-            return str_expr
+            return str_node_id
 
     def to_graph(self, graph: Graph, node_id: int):
         this_node = str(node_id)
@@ -325,6 +323,7 @@ class XADDINode(Node):
         return ret
 
     def __repr__(self, level=0):
+        return f"dec: {self.dec}, low: {self.low}, high: {self.high}"
         ret = ""
         ret += f"( [{self._context._id_to_expr[self.dec]}]"
 
@@ -347,9 +346,17 @@ class XADDINode(Node):
         ret += "\n" + "\t" * level + ") "
         return ret
 
-    def to_graph(self, graph: Graph, node_id: int):
+    def to_graph(self, graph: Graph, node_id: int, cache: Optional[set] = None):
+        if cache is None:
+            cache = set()
+
         # Decision node
         this_node = str(node_id)
+
+        if this_node in cache:
+            return
+        cache.add(this_node)
+
         graph.add_node(this_node)
         dec_id = self.dec
         dec_expr = self._context._id_to_expr[dec_id]

@@ -148,6 +148,9 @@ class XADD:
         self._obj = None
         self._additive_obj = False
 
+        # Graphviz cache.
+        self._graph_cache = {}
+
     def set_variable_ordering_func(self, func: Callable):
         XADD._func_var_index = func
     
@@ -1922,6 +1925,12 @@ class XADD:
     def get_graph(self, node_id: int, name: str = '') -> Graph:
         """Creates a graph view of a given node."""
         try:
+            # Check cache and return.
+            graph = self._graph_cache.get(node_id)
+            if graph is not None:
+                return graph
+
+            # Otherwise, create a graph.
             graph = Graph(
                 name=name, 
                 directed=True,
@@ -1933,21 +1942,31 @@ class XADD:
             warnings.warn("You need to install 'pygraphviz' to construct graph visualization")
             raise Exception
 
-    def save_graph(self, node_id: int, file_name: str):
-        """Saves the graph visualization of a given node."""
+    def save_graph(
+            self, node_id: int, file_name: str, f_dir: str = '', file_type: Optional[str] = None
+    ):
+        """Saves the graph visualization of a given node in .png or .pdf format."""
         graph = self.get_graph(node_id)
         graph.configure()
 
-        f_dir = Path('./tmp')
+        if not f_dir:
+            f_dir = Path('./tmp')
+
         f_dir.mkdir(exist_ok=True, parents=True)
-        if file_name.endswith('png'):
-            file_name = file_name.replace('png', 'pdf')
-        elif not file_name.endswith('pdf'):
-            file_name = file_name + '.pdf'
+
+        # Ensure the file name has the correct extension.
+        if file_type is None:
+            if not (file_name.endswith('png') or file_name.endswith('pdf')):
+                raise ValueError('File name should end with .png or .pdf')
+        else:
+            if file_type not in ('png', 'pdf'):
+                raise ValueError('File type should be either png or pdf')
+            if not file_name.endswith(file_type):
+                file_name = file_name + '.' + file_type
         f_path = f_dir / file_name
 
+        # Draw the graph.
         graph.draw(f_path, prog='dot')
-
 
 
 def get_xadd_bounds(
