@@ -19,7 +19,7 @@ except ImportError:
             pass
 
 from xaddpy.utils.global_vars import (
-    REL_TYPE, OP_TYPE, UNARY_OP, RELATIONAL_OPERATOR, ACCEPTED_RV_TYPES
+    GUROBI_AVAILABLE, REL_TYPE, OP_TYPE, UNARY_OP, RELATIONAL_OPERATOR, ACCEPTED_RV_TYPES
 )
 import xaddpy.utils.util as xadd_util
 from xaddpy.utils.util import check_sym_boolean, sample_rvs, check_expr_linear
@@ -1761,9 +1761,9 @@ class XADD:
         Returns:
             int: The resulting XADD node ID.
         """
-        if self.perform_reduce_lp:
-            return self.RLPContext.reduce_lp(node_id)
-        return node_id
+        if not GUROBI_AVAILABLE or not self.perform_reduce_lp:
+            return node_id
+        return self.RLPContext.reduce_lp(node_id)
 
     @property
     def perform_reduce_lp(self):

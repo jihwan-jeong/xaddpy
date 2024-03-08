@@ -47,11 +47,20 @@ TIME_INTERVAL = 10
 MIPGap = 5e-3
 ACCEPTED_RV_TYPES = {'UNIFORM', 'NORMAL', 'BERNOULLI'}
 
+
+class Dummy:
+    Constr = None
+    LinExpr = None
+    GRB = None
+
+
 try:
     import gurobipy
     from gurobipy import GRB
     LP_BACKEND = 'gurobi'
     REL_REVERSED_GUROBI = {GRB.GREATER_EQUAL: GRB.LESS_EQUAL, GRB.LESS_EQUAL: GRB.GREATER_EQUAL}
+    GUROBI_AVAILABLE = True
 except:
     LP_BACKEND = 'pulp'
     REL_REVERSED_GUROBI = {}
+    GUROBI_AVAILABLE = False

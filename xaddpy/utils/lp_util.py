@@ -8,23 +8,27 @@ import warnings
 import pulp as pl
 from pulp import const
 import symengine.lib.symengine_wrapper as core
-try:
+
+from xaddpy.utils.logger import logger
+from xaddpy.utils.global_vars import EPSILON, GUROBI_AVAILABLE, LP_BACKEND, REL_REVERSED_GUROBI
+from xaddpy.utils.symengine import BooleanVar, RandomVar
+from xaddpy.utils.util import relConverter, typeConverter
+
+if GUROBI_AVAILABLE:
     import gurobipy as gp
     from gurobipy import GRB
-except:
-    GRB_SOL_STATUS_TO_PULP_STATUS = {}
-else:
     GRB_SOL_STATUS_TO_PULP_STATUS = {
         GRB.INF_OR_UNBD: pl.LpStatusUndefined,
         GRB.UNBOUNDED: pl.LpStatusUnbounded,
         GRB.OPTIMAL: pl.LpStatusOptimal,
         GRB.INFEASIBLE: pl.LpStatusInfeasible
     }
+else:
+    from xaddpy.utils.global_vars import Dummy
+    GRB_SOL_STATUS_TO_PULP_STATUS = {}
 
-from xaddpy.utils.logger import logger
-from xaddpy.utils.global_vars import EPSILON, LP_BACKEND, REL_REVERSED_GUROBI
-from xaddpy.utils.symengine import BooleanVar, RandomVar
-from xaddpy.utils.util import relConverter, typeConverter
+    gp = Dummy()
+    GRB = Dummy()
 
 FeasibilityTol = 1e-6       # Gurobi default feasibility tolerance
 IntFeasTol = 1e-5           # Gurobi default integer feasibility tolerance

@@ -1,16 +1,21 @@
 from typing import Dict, FrozenSet, Optional, Set, cast
-from gurobipy import GRB
 
 import psutil
 import pulp as pl
 from pulp import const
 import symengine.lib.symengine_wrapper as core
 
-from xaddpy.utils.global_vars import LP_BACKEND, REL_NEGATED, REL_TYPE
+from xaddpy.utils.global_vars import LP_BACKEND, REL_NEGATED, REL_TYPE, Dummy
 from xaddpy.utils.logger import logger
 from xaddpy.utils.lp_util import Model, GurobiModel, convert_to_pulp_expr, pulp_constr_to_gurobi_constr
 from xaddpy.utils.symengine import BooleanVar
 from xaddpy.xadd.node import Node, XADDINode, XADDTNode
+
+try:
+    from gurobipy import GRB
+except ImportError:
+    GRB = Dummy()
+
 
 default_check_redundancy = True
 TEST_SLACK = True
