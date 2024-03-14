@@ -581,29 +581,30 @@ class XADD:
                  -1 otherwise
         In XADD, this is equivalent to
             ([x <= 0]
-                ([1])
                 ([x == 0]
                     ([0])
                     ([-1])
                 )
+                ([1])
             )
         which requires introducing a decision that checkes equality.
         """
         node = self.get_exist_node(node_id)
         assert node.is_leaf()
-        
+
         node = cast(XADDTNode, node)
         expr = node.expr
-        
+
         dec_expr1 = expr <= 0
         dec1, is_reversed = self.get_dec_expr_index(dec_expr1, create=True)
         dec_expr2 = core.Eq(expr, 0)
-        low = self.ONE        
-        high = self.get_dec_node(dec_expr2, core.S(-1), core.S(0))
-        
-        if is_reversed:
-            high, low = low, high
-        
+        if not is_reversed:
+            low = self.ONE
+            high = self.get_dec_node(dec_expr2, core.S(-1), core.S(0))
+        else:
+            low = self.get_leaf_node(core.S(-1))
+            high = self.get_dec_node(dec_expr2, core.S(1), core.S(0))
+
         ret = self.get_internal_node(dec1, low, high)
         ret = self.make_canonical(ret)
         return ret
@@ -1050,7 +1051,13 @@ class XADD:
             lhs = dec_expr.args[0]
             if len(lhs.free_symbols.intersection(set(subst_dict.keys()))) > 0:
                 lhs = lhs.xreplace({sub_out: core.S(sub_in) for sub_out, sub_in in subst_dict.items()})
-            
+            if isinstance(dec_expr, core.Equality):
+                # Equality puts 0 on the LHS; hence, need to substitute to RHS.
+                rhs = dec_expr.args[1]
+                if len(rhs.free_symbols.intersection(set(subst_dict.keys()))) > 0:
+                    rhs = rhs.xreplace({sub_out: core.S(sub_in) for sub_out, sub_in in subst_dict.items()})
+                lhs = rhs
+
             # Check if the expression holds in equality and the true branch is NaN
             # Assuming canonical expression.. rhs is always 0. Hence, lhs == 0 iff dec_expr == core.true.
             # In this case, set dec_expr = False, so that false branch can be chosen instead.
@@ -1058,8 +1065,10 @@ class XADD:
                 dec_expr = core.false
             elif lhs == 0 and low == self.NAN:
                 dec_expr = core.true
-            else:
+            elif not isinstance(dec_expr, core.Equality):
                 dec_expr = lhs <= 0
+            else:
+                dec_expr = core.Eq(lhs, 0)
 
             # # Handle tautologies
             if dec_expr == core.true:
@@ -1951,6 +1960,8 @@ class XADD:
 
         if not f_dir:
             f_dir = Path('./tmp')
+        elif isinstance(f_dir, str):
+            f_dir = Path(f_dir)
 
         f_dir.mkdir(exist_ok=True, parents=True)
 
@@ -1989,7 +2000,8 @@ def get_xadd_bounds(
         if isinstance(dec_expr, BooleanVar) or v not in dec_expr.atoms():
             var_indep_decisions.append((dec_expr, is_true))
             continue
-
+        
+        # TODO: what if `dec_expr` is an equality?
         lhs, rhs = dec_expr.args[0], dec_expr.args[1]
         lt = isinstance(dec_expr, core.LessThan)
         lt = (lt and is_true) or (not lt and not is_true)
@@ -2305,7 +2317,7 @@ class XADDLeafMultivariateMinOrMax(XADDLeafOperation):
             leaf_val, var=self._var, xadd=xadd_upper_bound)
 
         # Take casemin / casemax of eval_lower and eval_upper.
-        """
+        r"""
         If `leaf_val` is bilinear, then we know that a leaf value of `eval_upper - eval_lower` will factorize as 
             (ub_vj - lb_vj) * (d_vj + \sum_i x_i Q_ij) and that (ub_vj - lb_vj) >= 0
         Therefore, we simply need to add the following conditional:
@@ -2483,7 +2495,7 @@ class XADDLeafMinOrMax(XADDLeafOperation):
         annotation = (xadd_upper_bound, xadd_lower_bound) if self.annotate else None
 
         # Take casemin / casemax of eval_lower and eval_upper.
-        """
+        r"""
         If `leaf_val` is bilinear, then we know that a leaf value of `eval_upper - eval_lower` will factorize as 
             (ub_vj - lb_vj) * (d_vj + \sum_i x_i Q_ij) and that (ub_vj - lb_vj) >= 0
         Therefore, we simply need to add the following conditional:

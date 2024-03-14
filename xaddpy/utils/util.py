@@ -282,7 +282,11 @@ def check_expr_linear(expr: core.Basic) -> bool:
     Returns:
         bool: True if linear; otherwise False.
     """
-    if isinstance(expr, core.Rel):
+    if isinstance(expr, core.Equality):
+        # SymEngine puts expressions on the RHS for equality.
+        expr_ = expr.args[0]
+        expr = expr.args[1] if expr_ == 0 else expr_
+    elif isinstance(expr, core.Rel):
         expr = expr.args[0]
     coeffs_dict = expr.as_coefficients_dict()
     for term in coeffs_dict:
